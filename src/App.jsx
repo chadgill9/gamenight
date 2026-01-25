@@ -98,9 +98,110 @@ const transformESPNGame = (event, sport) => {
 };
 
 // ============================================
+// NFL Team Abbreviation to ESPN ID Mapping (for depth chart API)
+// ============================================
+const NFL_TEAM_IDS = {
+  'ARI': 22, 'ATL': 1, 'BAL': 33, 'BUF': 2, 'CAR': 29, 'CHI': 3, 'CIN': 4, 'CLE': 5,
+  'DAL': 6, 'DEN': 7, 'DET': 8, 'GB': 9, 'HOU': 34, 'IND': 11, 'JAX': 30, 'KC': 12,
+  'LAC': 24, 'LAR': 14, 'LV': 13, 'MIA': 15, 'MIN': 16, 'NE': 17, 'NO': 18, 'NYG': 19,
+  'NYJ': 20, 'PHI': 21, 'PIT': 23, 'SEA': 26, 'SF': 25, 'TB': 27, 'TEN': 10, 'WAS': 28
+};
+
+// ============================================
+// Sort NFL Roster Using Depth Chart Data
+// ============================================
+const sortNFLRosterWithDepthChart = (roster, depthChartData) => {
+  if (!depthChartData?.depthchart || depthChartData.depthchart.length === 0) {
+    return null; // Fall back to default sorting
+  }
+  
+  // Build a map of player ID -> { depthRank, positionOrder }
+  // Lower depthRank = higher on depth chart (starter)
+  // positionOrder determines which position groups appear first
+  const positionGroupOrder = {
+    'qb': 1, 'rb': 2, 'fb': 3,
+    'wr1': 4, 'wr2': 5, 'wr3': 6, 'wr': 7,
+    'te': 8,
+    'lt': 9, 'lg': 10, 'c': 11, 'rg': 12, 'rt': 13,
+    'lde': 14, 'nt': 15, 'rde': 16,
+    'wlb': 17, 'lilb': 18, 'rilb': 19, 'slb': 20, 'mlb': 21,
+    'lcb': 22, 'rcb': 23, 'nb': 24,
+    'ss': 25, 'fs': 26,
+    'pk': 27, 'p': 28, 'ls': 29, 'h': 30, 'kr': 31, 'pr': 32
+  };
+  
+  const playerDepthMap = new Map();
+  
+  // Find the offensive formation (usually "3WR 1TE" which has QB, RB, WR, TE, OL)
+  const offenseFormation = depthChartData.depthchart.find(dc => 
+    dc.name?.includes('WR') || dc.name?.includes('TE') || dc.id === '21'
+  );
+  
+  // Find the defensive formation (usually "Base 3-4 D")
+  const defenseFormation = depthChartData.depthchart.find(dc => 
+    dc.name?.includes('D') || dc.name?.includes('Defense') || dc.id === '15'
+  );
+  
+  // Find special teams
+  const specialTeams = depthChartData.depthchart.find(dc => 
+    dc.name?.includes('Special') || dc.id === '18'
+  );
+  
+  // Process each formation
+  const formations = [offenseFormation, defenseFormation, specialTeams].filter(Boolean);
+  
+  formations.forEach(formation => {
+    const positions = formation.positions || {};
+    
+    Object.entries(positions).forEach(([posKey, posData]) => {
+      const athletes = posData.athletes || [];
+      const baseOrder = positionGroupOrder[posKey.toLowerCase()] || 50;
+      
+      athletes.forEach((athlete, depthIndex) => {
+        // Convert ID to string for consistent comparison
+        const playerId = String(athlete.id);
+        // Don't overwrite if already have a better (lower) rank from offense formation
+        if (!playerDepthMap.has(playerId) || playerDepthMap.get(playerId).positionOrder > baseOrder) {
+          playerDepthMap.set(playerId, {
+            depthRank: depthIndex, // 0 = starter, 1 = backup, etc.
+            positionOrder: baseOrder,
+            positionKey: posKey.toUpperCase()
+          });
+        }
+      });
+    });
+  });
+  
+  // Sort roster using depth chart data
+  const sortedRoster = [...roster].sort((a, b) => {
+    // Convert roster IDs to strings for comparison
+    const aDepth = playerDepthMap.get(String(a.id));
+    const bDepth = playerDepthMap.get(String(b.id));
+    
+    // Players on depth chart come before those not on it
+    if (aDepth && !bDepth) return -1;
+    if (!aDepth && bDepth) return 1;
+    if (!aDepth && !bDepth) {
+      // Neither on depth chart, sort by position then experience
+      return (b.experience || 0) - (a.experience || 0);
+    }
+    
+    // First sort by position group (QB before RB before WR, etc.)
+    if (aDepth.positionOrder !== bDepth.positionOrder) {
+      return aDepth.positionOrder - bDepth.positionOrder;
+    }
+    
+    // Within same position, sort by depth (starter before backup)
+    return aDepth.depthRank - bDepth.depthRank;
+  });
+  
+  return sortedRoster;
+};
+
+// ============================================
 // Roster Sorting by Sport
 // ============================================
-const sortRosterBySport = (roster, sport) => {
+const sortRosterBySport = (roster, sport, depthChartData = null) => {
   if (!roster || roster.length === 0) return roster;
   
   if (sport === 'nba') {
@@ -120,7 +221,15 @@ const sortRosterBySport = (roster, sport) => {
   }
   
   if (sport === 'nfl') {
-    // NFL: Sort by position group relevance (QB, RB, WR, TE, OL, DL, LB, DB, K, P)
+    // NFL: Use depth chart data if available for official ordering
+    if (depthChartData) {
+      const depthSorted = sortNFLRosterWithDepthChart(roster, depthChartData);
+      if (depthSorted) {
+        return depthSorted;
+      }
+    }
+    
+    // Fallback: Sort by position group relevance (QB, RB, WR, TE, OL, DL, LB, DB, K, P)
     const positionOrder = {
       'QB': 1, 
       'RB': 2, 'FB': 3,
@@ -215,11 +324,26 @@ const api = {
 
   async getTeam(teamId, sport = 'nba') {
     try {
-      const [teamRes, rosterRes, scheduleRes] = await Promise.all([
+      // Build fetch promises array
+      const fetchPromises = [
         fetch(`${ESPN_PROXY}?sport=${sport}&endpoint=team&teamId=${teamId}`),
         fetch(`${ESPN_PROXY}?sport=${sport}&endpoint=roster&teamId=${teamId}`),
         fetch(`${ESPN_PROXY}?sport=${sport}&endpoint=schedule&teamId=${teamId}`)
-      ]);
+      ];
+      
+      // For NFL, also fetch depth chart using numeric team ID
+      let depthChartPromise = null;
+      if (sport === 'nfl') {
+        const numericTeamId = NFL_TEAM_IDS[teamId.toUpperCase()] || NFL_TEAM_IDS[teamId];
+        if (numericTeamId) {
+          depthChartPromise = fetch(`${ESPN_PROXY}?sport=${sport}&endpoint=depthchart&teamId=${numericTeamId}`);
+          fetchPromises.push(depthChartPromise);
+        }
+      }
+      
+      const responses = await Promise.all(fetchPromises);
+      const [teamRes, rosterRes, scheduleRes] = responses;
+      const depthChartRes = responses[3]; // May be undefined if not NFL
       
       if (!teamRes.ok) {
         throw new Error(`Team fetch failed: ${teamRes.status}`);
@@ -230,6 +354,16 @@ const api = {
       
       if (!team) {
         throw new Error('Team not found in response');
+      }
+      
+      // Parse depth chart data for NFL
+      let depthChartData = null;
+      if (sport === 'nfl' && depthChartRes?.ok) {
+        try {
+          depthChartData = await depthChartRes.json();
+        } catch (e) {
+          console.error('Depth chart parse error:', e);
+        }
       }
       
       // Parse last 5 games from schedule
@@ -450,8 +584,8 @@ const api = {
           type: p.injuryType
         }));
       
-      // Sort roster based on sport
-      const sortedRoster = sortRosterBySport(roster, sport);
+      // Sort roster based on sport (passing depth chart data for NFL)
+      const sortedRoster = sortRosterBySport(roster, sport, depthChartData);
       
       return {
         team: {
@@ -766,6 +900,84 @@ const AnimatedButton = ({ children, primary, className, onClick, disabled }) => 
       }}
     >
       {children}
+    </button>
+  );
+};
+
+// ============================================
+// Roster Row Component - Clean & Scannable
+// ============================================
+const RosterRow = ({ player, onClick, isStarter, sport, battingOrder, showPitcherHand, isInferred }) => {
+  const isInjured = player.status && player.status !== 'Active' && player.status !== 'active';
+  
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-left group
+        ${isStarter 
+          ? 'bg-white/[0.03] hover:bg-white/[0.06]' 
+          : 'bg-transparent hover:bg-white/[0.03]'
+        }
+        ${isInjured ? 'opacity-60' : ''}
+      `}
+    >
+      {/* Batting Order Number (MLB) */}
+      {battingOrder && (
+        <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center text-xs font-bold text-emerald-400">
+          {battingOrder}
+        </div>
+      )}
+      
+      {/* Player Photo or Jersey */}
+      {player.headshot ? (
+        <img 
+          src={player.headshot} 
+          alt="" 
+          className={`w-10 h-10 rounded-full object-cover ${isStarter && !isInferred ? 'ring-2 ring-blue-500/30' : isInferred ? 'ring-2 ring-yellow-500/20' : 'bg-white/10'}`}
+        />
+      ) : (
+        <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold 
+          ${isStarter && !isInferred
+            ? 'bg-gradient-to-br from-blue-600/30 to-blue-800/30 text-blue-300' 
+            : isInferred 
+            ? 'bg-gradient-to-br from-yellow-600/20 to-yellow-800/20 text-yellow-400'
+            : 'bg-gradient-to-br from-gray-700 to-gray-800 text-gray-400'
+          }`}
+        >
+          {player.jersey || '?'}
+        </div>
+      )}
+      
+      {/* Player Info */}
+      <div className="flex-1 min-w-0">
+        <div className={`text-sm truncate flex items-center gap-1.5 ${isStarter ? 'font-semibold text-white' : 'font-medium text-gray-300'}`}>
+          {player.name}
+          {isInferred && (
+            <span className="text-[9px] text-yellow-500 bg-yellow-500/10 px-1.5 py-0.5 rounded">PROJ</span>
+          )}
+        </div>
+        <div className="text-xs text-gray-500 flex items-center gap-1.5">
+          <span className="font-medium">{player.position}</span>
+          {player.jersey && <span>#{player.jersey}</span>}
+          {showPitcherHand && <span className="text-gray-600">• RHP</span>}
+        </div>
+      </div>
+      
+      {/* Status Badge */}
+      {isInjured && (
+        <span className={`text-[10px] font-semibold px-2 py-1 rounded-full ${
+          player.status === 'Out' ? 'bg-red-500/20 text-red-400' : 
+          player.status === 'Doubtful' ? 'bg-orange-500/20 text-orange-400' :
+          'bg-yellow-500/20 text-yellow-400'
+        }`}>
+          {player.status}
+        </span>
+      )}
+      
+      {/* Chevron */}
+      <svg className="w-4 h-4 text-gray-600 group-hover:text-gray-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+      </svg>
     </button>
   );
 };
@@ -1658,211 +1870,462 @@ export default function GamenightApp() {
 
                   {/* Roster Tab Content */}
                   {teamTab === 'roster' && (
-                    <div>
-                      {(!teamDetails.roster || teamDetails.roster.length === 0) && (
-                        <div className="text-center py-8 bg-white/[0.03] rounded-xl">
-                          <div className="text-sm text-gray-500">Roster unavailable</div>
+                    <div className="animate-fadeIn">
+                      {/* Loading State */}
+                      {teamLoading && (
+                        <div className="space-y-3">
+                          {[1,2,3,4,5].map(i => (
+                            <div key={i} className="h-16 bg-white/[0.03] rounded-xl animate-pulse" />
+                          ))}
                         </div>
                       )}
                       
-                      {teamDetails.roster && teamDetails.roster.length > 0 && (
+                      {/* Error State */}
+                      {!teamLoading && (!teamDetails.roster || teamDetails.roster.length === 0) && (
+                        <div className="text-center py-12 bg-white/[0.02] rounded-2xl border border-white/5">
+                          <div className="w-12 h-12 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-3">
+                            <Icons.User />
+                          </div>
+                          <div className="text-sm text-gray-400 font-medium">Roster unavailable</div>
+                          <div className="text-xs text-gray-600 mt-1">Check back later</div>
+                        </div>
+                      )}
+                      
+                      {!teamLoading && teamDetails.roster && teamDetails.roster.length > 0 && (
                         <>
-                          {/* NBA: Starters + Bench */}
-                          {activeSport === 'nba' && (
-                            <>
-                              {/* Starters */}
-                              {teamDetails.roster.filter(p => p.isStarter).length > 0 && (
-                                <div className="mb-4">
-                                  <div className="text-xs text-gray-500 uppercase tracking-wider mb-2 font-semibold">Starting 5</div>
-                                  <div className="bg-white/[0.03] rounded-xl overflow-hidden">
-                                    {teamDetails.roster.filter(p => p.isStarter).map((player, i) => (
-                                      <AnimatedButton 
-                                        key={player.id || i} 
-                                        onClick={() => setSelectedPlayer(player)}
-                                        className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-white/[0.05] transition-colors text-left ${i > 0 ? 'border-t border-white/5' : ''}`}
-                                      >
-                                        {player.headshot ? (
-                                          <img src={player.headshot} alt="" className="w-11 h-11 rounded-full object-cover bg-white/10" />
-                                        ) : (
-                                          <div className="w-11 h-11 rounded-full bg-gradient-to-br from-gray-700 to-gray-800 flex items-center justify-center text-base font-bold text-gray-400">
-                                            {player.jersey || '?'}
-                                          </div>
-                                        )}
-                                        <div className="flex-1 min-w-0">
-                                          <div className="font-semibold text-sm">{player.name}</div>
-                                          <div className="text-xs text-gray-500">{player.position}{player.jersey ? ` · #${player.jersey}` : ''}</div>
-                                        </div>
-                                        {player.status && player.status !== 'Active' && player.status !== 'active' && (
-                                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
-                                            player.status === 'Out' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'
-                                          }`}>{player.status}</span>
-                                        )}
-                                        <Icons.ChevronRight />
-                                      </AnimatedButton>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                              {/* Bench */}
-                              <div>
-                                <div className="text-xs text-gray-500 uppercase tracking-wider mb-2 font-semibold">Bench</div>
-                                <div className="bg-white/[0.03] rounded-xl overflow-hidden">
-                                  {teamDetails.roster.filter(p => !p.isStarter).map((player, i) => (
-                                    <AnimatedButton 
-                                      key={player.id || i} 
-                                      onClick={() => setSelectedPlayer(player)}
-                                      className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-white/[0.05] transition-colors text-left ${i > 0 ? 'border-t border-white/5' : ''}`}
-                                    >
-                                      {player.headshot ? (
-                                        <img src={player.headshot} alt="" className="w-11 h-11 rounded-full object-cover bg-white/10" />
-                                      ) : (
-                                        <div className="w-11 h-11 rounded-full bg-gradient-to-br from-gray-700 to-gray-800 flex items-center justify-center text-base font-bold text-gray-400">
-                                          {player.jersey || '?'}
-                                        </div>
-                                      )}
-                                      <div className="flex-1 min-w-0">
-                                        <div className="font-semibold text-sm">{player.name}</div>
-                                        <div className="text-xs text-gray-500">{player.position}{player.jersey ? ` · #${player.jersey}` : ''}</div>
-                                      </div>
-                                      {player.status && player.status !== 'Active' && player.status !== 'active' && (
-                                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
-                                          player.status === 'Out' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'
-                                        }`}>{player.status}</span>
-                                      )}
-                                      <Icons.ChevronRight />
-                                    </AnimatedButton>
-                                  ))}
-                                </div>
-                              </div>
-                            </>
-                          )}
-                          
-                          {/* MLB: Starting Pitcher + Position Players + Pitchers */}
-                          {activeSport === 'mlb' && (
-                            <>
-                              {/* Starting Pitchers */}
-                              {teamDetails.roster.filter(p => p.position === 'SP').length > 0 && (
-                                <div className="mb-4">
-                                  <div className="text-xs text-gray-500 uppercase tracking-wider mb-2 font-semibold">Starting Pitchers</div>
-                                  <div className="bg-white/[0.03] rounded-xl overflow-hidden">
-                                    {teamDetails.roster.filter(p => p.position === 'SP').map((player, i) => (
-                                      <AnimatedButton 
-                                        key={player.id || i} 
-                                        onClick={() => setSelectedPlayer(player)}
-                                        className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-white/[0.05] transition-colors text-left ${i > 0 ? 'border-t border-white/5' : ''}`}
-                                      >
-                                        {player.headshot ? (
-                                          <img src={player.headshot} alt="" className="w-11 h-11 rounded-full object-cover bg-white/10" />
-                                        ) : (
-                                          <div className="w-11 h-11 rounded-full bg-gradient-to-br from-gray-700 to-gray-800 flex items-center justify-center text-base font-bold text-gray-400">
-                                            {player.jersey || '?'}
-                                          </div>
-                                        )}
-                                        <div className="flex-1 min-w-0">
-                                          <div className="font-semibold text-sm">{player.name}</div>
-                                          <div className="text-xs text-gray-500">{player.position}{player.jersey ? ` · #${player.jersey}` : ''}</div>
-                                        </div>
-                                        <Icons.ChevronRight />
-                                      </AnimatedButton>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                              {/* Position Players */}
-                              {teamDetails.roster.filter(p => !['SP', 'RP', 'CL', 'P'].includes(p.position)).length > 0 && (
-                                <div className="mb-4">
-                                  <div className="text-xs text-gray-500 uppercase tracking-wider mb-2 font-semibold">Position Players</div>
-                                  <div className="bg-white/[0.03] rounded-xl overflow-hidden">
-                                    {teamDetails.roster.filter(p => !['SP', 'RP', 'CL', 'P'].includes(p.position)).map((player, i) => (
-                                      <AnimatedButton 
-                                        key={player.id || i} 
-                                        onClick={() => setSelectedPlayer(player)}
-                                        className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-white/[0.05] transition-colors text-left ${i > 0 ? 'border-t border-white/5' : ''}`}
-                                      >
-                                        {player.headshot ? (
-                                          <img src={player.headshot} alt="" className="w-11 h-11 rounded-full object-cover bg-white/10" />
-                                        ) : (
-                                          <div className="w-11 h-11 rounded-full bg-gradient-to-br from-gray-700 to-gray-800 flex items-center justify-center text-base font-bold text-gray-400">
-                                            {player.jersey || '?'}
-                                          </div>
-                                        )}
-                                        <div className="flex-1 min-w-0">
-                                          <div className="font-semibold text-sm">{player.name}</div>
-                                          <div className="text-xs text-gray-500">{player.position}{player.jersey ? ` · #${player.jersey}` : ''}</div>
-                                        </div>
-                                        <Icons.ChevronRight />
-                                      </AnimatedButton>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                              {/* Relief Pitchers */}
-                              {teamDetails.roster.filter(p => ['RP', 'CL', 'P'].includes(p.position)).length > 0 && (
-                                <div>
-                                  <div className="text-xs text-gray-500 uppercase tracking-wider mb-2 font-semibold">Bullpen</div>
-                                  <div className="bg-white/[0.03] rounded-xl overflow-hidden">
-                                    {teamDetails.roster.filter(p => ['RP', 'CL', 'P'].includes(p.position)).map((player, i) => (
-                                      <AnimatedButton 
-                                        key={player.id || i} 
-                                        onClick={() => setSelectedPlayer(player)}
-                                        className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-white/[0.05] transition-colors text-left ${i > 0 ? 'border-t border-white/5' : ''}`}
-                                      >
-                                        {player.headshot ? (
-                                          <img src={player.headshot} alt="" className="w-11 h-11 rounded-full object-cover bg-white/10" />
-                                        ) : (
-                                          <div className="w-11 h-11 rounded-full bg-gradient-to-br from-gray-700 to-gray-800 flex items-center justify-center text-base font-bold text-gray-400">
-                                            {player.jersey || '?'}
-                                          </div>
-                                        )}
-                                        <div className="flex-1 min-w-0">
-                                          <div className="font-semibold text-sm">{player.name}</div>
-                                          <div className="text-xs text-gray-500">{player.position}{player.jersey ? ` · #${player.jersey}` : ''}</div>
-                                        </div>
-                                        <Icons.ChevronRight />
-                                      </AnimatedButton>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                            </>
-                          )}
-                          
-                          {/* NFL: By Position Group */}
-                          {activeSport === 'nfl' && (
-                            <div>
-                              <div className="flex items-center justify-between mb-2">
-                                <span className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Roster</span>
-                                <span className="text-xs text-gray-600">{teamDetails.roster?.length || 0}</span>
-                              </div>
-                              <div className="bg-white/[0.03] rounded-xl overflow-hidden">
-                                {teamDetails.roster.map((player, i) => (
-                                  <AnimatedButton 
-                                    key={player.id || i} 
-                                    onClick={() => setSelectedPlayer(player)}
-                                    className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-white/[0.05] transition-colors text-left ${i > 0 ? 'border-t border-white/5' : ''}`}
-                                  >
-                                    {player.headshot ? (
-                                      <img src={player.headshot} alt="" className="w-11 h-11 rounded-full object-cover bg-white/10" />
-                                    ) : (
-                                      <div className="w-11 h-11 rounded-full bg-gradient-to-br from-gray-700 to-gray-800 flex items-center justify-center text-base font-bold text-gray-400">
-                                        {player.jersey || '?'}
-                                      </div>
+                          {/* ============ NBA ROSTER ============ */}
+                          {activeSport === 'nba' && (() => {
+                            // Get players ESPN marked as starters
+                            const espnStarters = teamDetails.roster.filter(p => p.isStarter);
+                            const nonStarters = teamDetails.roster.filter(p => !p.isStarter);
+                            
+                            // Position priority for filling gaps
+                            const positionPriority = ['PG', 'SG', 'SF', 'PF', 'C'];
+                            const fallbackPositions = ['G', 'F', 'G-F', 'F-G', 'F-C', 'C-F'];
+                            
+                            // Build starting 5: use ESPN starters first, then fill gaps
+                            let displayStarters = [...espnStarters];
+                            
+                            // If we have less than 5 starters, fill remaining slots
+                            if (displayStarters.length < 5) {
+                              // Track which positions we already have
+                              const filledPositions = displayStarters.map(p => p.position);
+                              
+                              // First pass: fill by missing core positions
+                              positionPriority.forEach(pos => {
+                                if (displayStarters.length >= 5) return;
+                                if (filledPositions.some(fp => fp === pos)) return;
+                                
+                                const candidate = nonStarters.find(p => 
+                                  p.position === pos && !displayStarters.includes(p)
+                                );
+                                if (candidate) {
+                                  candidate._inferred = true;
+                                  displayStarters.push(candidate);
+                                  filledPositions.push(pos);
+                                }
+                              });
+                              
+                              // Second pass: fill by flexible positions (G, F, etc.)
+                              fallbackPositions.forEach(pos => {
+                                if (displayStarters.length >= 5) return;
+                                
+                                const candidate = nonStarters.find(p => 
+                                  (p.position === pos || p.position?.includes(pos.charAt(0))) && 
+                                  !displayStarters.includes(p)
+                                );
+                                if (candidate) {
+                                  candidate._inferred = true;
+                                  displayStarters.push(candidate);
+                                }
+                              });
+                              
+                              // Third pass: if still short, just take top remaining by experience
+                              if (displayStarters.length < 5) {
+                                const remaining = nonStarters
+                                  .filter(p => !displayStarters.includes(p))
+                                  .sort((a, b) => (b.experience || 0) - (a.experience || 0));
+                                
+                                while (displayStarters.length < 5 && remaining.length > 0) {
+                                  const next = remaining.shift();
+                                  next._inferred = true;
+                                  displayStarters.push(next);
+                                }
+                              }
+                            }
+                            
+                            // Sort starters by position order for display
+                            const posOrder = { 'PG': 1, 'G': 2, 'SG': 3, 'SF': 4, 'F': 5, 'PF': 6, 'C': 7 };
+                            displayStarters.sort((a, b) => 
+                              (posOrder[a.position] || 99) - (posOrder[b.position] || 99)
+                            );
+                            
+                            // Bench is everyone not in displayStarters
+                            const displayBench = teamDetails.roster.filter(p => !displayStarters.includes(p));
+                            
+                            // Determine label
+                            const hasFullESPNStarters = espnStarters.length >= 5;
+                            const hasPartialESPNStarters = espnStarters.length > 0 && espnStarters.length < 5;
+                            const hasNoESPNStarters = espnStarters.length === 0;
+                            
+                            // Debug logging (remove in production)
+                            console.log('[NBA Roster Debug]', {
+                              totalRoster: teamDetails.roster.length,
+                              espnStarters: espnStarters.length,
+                              displayStarters: displayStarters.length,
+                              displayBench: displayBench.length,
+                              starterNames: displayStarters.map(p => p.name)
+                            });
+                            
+                            return (
+                              <>
+                                {/* Starting 5 */}
+                                <div className="mb-6">
+                                  <div className="flex items-center gap-2 mb-3">
+                                    <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Starting 5</span>
+                                    {hasPartialESPNStarters && (
+                                      <span className="text-[10px] text-yellow-500 bg-yellow-500/10 px-2 py-0.5 rounded-full">Partial Lineup</span>
                                     )}
-                                    <div className="flex-1 min-w-0">
-                                      <div className="font-semibold text-sm">{player.name}</div>
-                                      <div className="text-xs text-gray-500">{player.position}{player.jersey ? ` · #${player.jersey}` : ''}</div>
+                                    {hasNoESPNStarters && (
+                                      <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">Projected</span>
+                                    )}
+                                  </div>
+                                  
+                                  {displayStarters.length < 5 && (
+                                    <div className="text-xs text-gray-500 mb-2 italic">
+                                      Starters not fully available — showing best estimate ({displayStarters.length}/5)
                                     </div>
-                                    {player.status && player.status !== 'Active' && player.status !== 'active' && (
-                                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
-                                        player.status === 'Out' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'
-                                      }`}>{player.status}</span>
+                                  )}
+                                  
+                                  <div className="space-y-1">
+                                    {displayStarters.map((player, i) => (
+                                      <RosterRow 
+                                        key={player.id || i} 
+                                        player={player} 
+                                        onClick={() => setSelectedPlayer(player)}
+                                        isStarter={true}
+                                        sport="nba"
+                                        isInferred={player._inferred}
+                                      />
+                                    ))}
+                                  </div>
+                                </div>
+                                
+                                {/* Bench */}
+                                {displayBench.length > 0 && (
+                                  <div>
+                                    <div className="flex items-center justify-between mb-3">
+                                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Bench</span>
+                                      <span className="text-[10px] text-gray-600">{displayBench.length} players</span>
+                                    </div>
+                                    <div className="space-y-1">
+                                      {displayBench.slice(0, 8).map((player, i) => (
+                                        <RosterRow 
+                                          key={player.id || i} 
+                                          player={player} 
+                                          onClick={() => setSelectedPlayer(player)}
+                                          isStarter={false}
+                                          sport="nba"
+                                        />
+                                      ))}
+                                    </div>
+                                    {displayBench.length > 8 && (
+                                      <button className="w-full text-center py-3 text-xs text-gray-500 hover:text-gray-400 transition-colors">
+                                        +{displayBench.length - 8} more players
+                                      </button>
                                     )}
-                                    <Icons.ChevronRight />
-                                  </AnimatedButton>
-                                ))}
-                              </div>
-                            </div>
-                          )}
+                                  </div>
+                                )}
+                              </>
+                            );
+                          })()}
+                          
+                          {/* ============ NFL ROSTER ============ */}
+                          {activeSport === 'nfl' && (() => {
+                            /*
+                             * NFL Relevance Sorting Strategy
+                             * ================================
+                             * CRITICAL: ESPN roster is alphabetical, NOT depth chart order
+                             * 
+                             * Primary QB Detection (since no depth chart available):
+                             * 1. Prefer youngest QB with low experience (likely drafted starter)
+                             * 2. Among young QBs, prefer lower jersey number
+                             * 3. Fallback: first QB in list
+                             * 
+                             * This correctly identifies:
+                             * - Drake Maye (23yo, 2yr exp, #10) over Josh Dobbs (30yo, 9yr, #11)
+                             * - Caleb Williams over veteran backups
+                             */
+                            
+                            // Check if player is injured/out
+                            const isOut = (player) => {
+                              const status = player.status?.toLowerCase() || '';
+                              return status === 'out' || status === 'ir' || status === 'injured reserve' || 
+                                     status === 'pup' || status === 'nfi' || status === 'suspended';
+                            };
+                            
+                            // Base relevance scores by position
+                            const baseRelevance = {
+                              'QB': 55,  // Default for backup QBs
+                              'RB': 10, 'WR': 11, 'TE': 12,
+                              'CB': 20, 'DE': 21, 'OLB': 22, 'S': 23, 'FS': 24, 'SS': 25,
+                              'DT': 30, 'NT': 31, 'ILB': 32, 'MLB': 33, 'LB': 34, 'DL': 35, 'DB': 36,
+                              'LT': 40, 'RT': 41, 'LG': 42, 'RG': 43, 'C': 44, 'OL': 45, 'OT': 46, 'G': 47, 'T': 48,
+                              'FB': 50,
+                              'K': 60, 'P': 61, 'LS': 62
+                            };
+                            
+                            // Find all QBs
+                            const allQBs = teamDetails.roster.filter(p => p.position === 'QB' && !isOut(p));
+                            
+                            // Determine primary QB using heuristics:
+                            // Young QB (<=26) with low experience (<=3 years) = likely drafted franchise QB
+                            // Among candidates, prefer lower jersey number
+                            let primaryQB = null;
+                            
+                            if (allQBs.length > 0) {
+                              // First, look for young franchise QB (age <=26, experience <=3)
+                              const youngQBs = allQBs.filter(qb => 
+                                (qb.age || 30) <= 26 && (qb.experience || 10) <= 3
+                              );
+                              
+                              if (youngQBs.length > 0) {
+                                // Among young QBs, pick lowest jersey number
+                                primaryQB = youngQBs.sort((a, b) => 
+                                  (parseInt(a.jersey) || 99) - (parseInt(b.jersey) || 99)
+                                )[0];
+                              } else {
+                                // No young franchise QB - pick by lowest jersey number among all
+                                primaryQB = allQBs.sort((a, b) => 
+                                  (parseInt(a.jersey) || 99) - (parseInt(b.jersey) || 99)
+                                )[0];
+                              }
+                            }
+                            
+                            const primaryQBId = primaryQB?.id;
+                            
+                            // Assign relevance score to EVERY player (no filtering!)
+                            const scoredRoster = teamDetails.roster.map(player => {
+                              let score = baseRelevance[player.position] || 99;
+                              
+                              // Primary QB gets Tier 0 (score 0)
+                              if (player.position === 'QB' && player.id === primaryQBId) {
+                                score = 0;
+                              }
+                              
+                              // Out/IR players get pushed to bottom (add 1000)
+                              if (isOut(player)) {
+                                score += 1000;
+                              }
+                              
+                              return {
+                                ...player,
+                                _relevanceScore: score,
+                                _isPrimaryQB: player.position === 'QB' && player.id === primaryQBId,
+                                _isOut: isOut(player)
+                              };
+                            });
+                            
+                            // Sort by relevance score, then experience as tiebreaker
+                            scoredRoster.sort((a, b) => {
+                              if (a._relevanceScore !== b._relevanceScore) {
+                                return a._relevanceScore - b._relevanceScore;
+                              }
+                              // Same score: higher experience first (for non-QB positions)
+                              return (b.experience || 0) - (a.experience || 0);
+                            });
+                            
+                            // Split into display sections (no players removed!)
+                            const activePlayers = scoredRoster.filter(p => !p._isOut);
+                            const outPlayers = scoredRoster.filter(p => p._isOut);
+                            
+                            const keyPlayers = activePlayers.slice(0, 12);
+                            const depthPlayers = activePlayers.slice(12);
+                            
+                            // Debug logging - verify correct QB selection
+                            console.log('[NFL Roster Debug]', {
+                              totalRoster: teamDetails.roster.length,
+                              allQBs: allQBs.map(q => `${q.name} (#${q.jersey}, age:${q.age}, exp:${q.experience})`),
+                              primaryQB: primaryQB ? `${primaryQB.name} (#${primaryQB.jersey})` : 'none',
+                              keyPlayersTop5: keyPlayers.slice(0, 5).map(p => `${p.position}: ${p.name} (score:${p._relevanceScore})`)
+                            });
+                            
+                            return (
+                              <>
+                                {/* Key Players */}
+                                <div className="mb-6">
+                                  <div className="flex items-center gap-2 mb-3">
+                                    <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Key Players</span>
+                                    <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">By Impact</span>
+                                  </div>
+                                  <div className="space-y-1">
+                                    {keyPlayers.map((player, i) => (
+                                      <RosterRow 
+                                        key={player.id || i} 
+                                        player={player} 
+                                        onClick={() => setSelectedPlayer(player)}
+                                        isStarter={true}
+                                        sport="nfl"
+                                      />
+                                    ))}
+                                  </div>
+                                </div>
+                                
+                                {/* Depth / Bench */}
+                                {depthPlayers.length > 0 && (
+                                  <div className="mb-6">
+                                    <div className="flex items-center gap-2 mb-3">
+                                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Depth / Rotation</span>
+                                      <span className="text-[10px] text-gray-600">{depthPlayers.length}</span>
+                                    </div>
+                                    <div className="space-y-1">
+                                      {depthPlayers.slice(0, 10).map((player, i) => (
+                                        <RosterRow 
+                                          key={player.id || i} 
+                                          player={player} 
+                                          onClick={() => setSelectedPlayer(player)}
+                                          isStarter={false}
+                                          sport="nfl"
+                                        />
+                                      ))}
+                                    </div>
+                                    {depthPlayers.length > 10 && (
+                                      <button className="w-full text-center py-3 text-xs text-gray-500 hover:text-gray-400 transition-colors">
+                                        +{depthPlayers.length - 10} more players
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                                
+                                {/* Injured / Out */}
+                                {outPlayers.length > 0 && (
+                                  <div>
+                                    <div className="flex items-center gap-2 mb-3">
+                                      <span className="w-2 h-2 rounded-full bg-red-500" />
+                                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Injured / Out</span>
+                                      <span className="text-[10px] text-gray-600">{outPlayers.length}</span>
+                                    </div>
+                                    <div className="space-y-1">
+                                      {outPlayers.slice(0, 5).map((player, i) => (
+                                        <RosterRow 
+                                          key={player.id || i} 
+                                          player={player} 
+                                          onClick={() => setSelectedPlayer(player)}
+                                          isStarter={false}
+                                          sport="nfl"
+                                        />
+                                      ))}
+                                    </div>
+                                    {outPlayers.length > 5 && (
+                                      <button className="w-full text-center py-3 text-xs text-gray-500 hover:text-gray-400 transition-colors">
+                                        +{outPlayers.length - 5} more
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </>
+                            );
+                          })()}
+                          
+                          {/* ============ MLB ROSTER ============ */}
+                          {activeSport === 'mlb' && (() => {
+                            const startingPitchers = teamDetails.roster.filter(p => p.position === 'SP');
+                            const positionPlayers = teamDetails.roster.filter(p => !['SP', 'RP', 'CL', 'P'].includes(p.position));
+                            const bullpen = teamDetails.roster.filter(p => ['RP', 'CL', 'P'].includes(p.position));
+                            
+                            // Sort position players by typical batting order
+                            const battingOrder = { 'CF': 1, 'SS': 2, '1B': 3, 'DH': 4, 'RF': 5, 'LF': 6, '3B': 7, 'C': 8, '2B': 9, 'OF': 10, 'IF': 11, 'UT': 12 };
+                            positionPlayers.sort((a, b) => (battingOrder[a.position] || 99) - (battingOrder[b.position] || 99));
+                            
+                            return (
+                              <>
+                                {/* Starting Rotation */}
+                                {startingPitchers.length > 0 && (
+                                  <div className="mb-6">
+                                    <div className="flex items-center gap-2 mb-3">
+                                      <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Starting Rotation</span>
+                                    </div>
+                                    <div className="space-y-1">
+                                      {startingPitchers.map((player, i) => (
+                                        <RosterRow 
+                                          key={player.id || i} 
+                                          player={player} 
+                                          onClick={() => setSelectedPlayer(player)}
+                                          isStarter={true}
+                                          sport="mlb"
+                                          showPitcherHand={true}
+                                        />
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                
+                                {/* Lineup / Position Players */}
+                                {positionPlayers.length > 0 && (
+                                  <div className="mb-6">
+                                    <div className="flex items-center gap-2 mb-3">
+                                      <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Lineup</span>
+                                      <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">Typical Order</span>
+                                    </div>
+                                    <div className="space-y-1">
+                                      {positionPlayers.slice(0, 9).map((player, i) => (
+                                        <RosterRow 
+                                          key={player.id || i} 
+                                          player={player} 
+                                          onClick={() => setSelectedPlayer(player)}
+                                          isStarter={true}
+                                          sport="mlb"
+                                          battingOrder={i + 1}
+                                        />
+                                      ))}
+                                    </div>
+                                    {positionPlayers.length > 9 && (
+                                      <div className="mt-4">
+                                        <div className="text-xs text-gray-500 mb-2">Bench</div>
+                                        <div className="space-y-1">
+                                          {positionPlayers.slice(9).map((player, i) => (
+                                            <RosterRow 
+                                              key={player.id || i} 
+                                              player={player} 
+                                              onClick={() => setSelectedPlayer(player)}
+                                              isStarter={false}
+                                              sport="mlb"
+                                            />
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                
+                                {/* Bullpen */}
+                                {bullpen.length > 0 && (
+                                  <div>
+                                    <div className="flex items-center gap-2 mb-3">
+                                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Bullpen</span>
+                                      <span className="text-[10px] text-gray-600">{bullpen.length}</span>
+                                    </div>
+                                    <div className="space-y-1">
+                                      {bullpen.slice(0, 6).map((player, i) => (
+                                        <RosterRow 
+                                          key={player.id || i} 
+                                          player={player} 
+                                          onClick={() => setSelectedPlayer(player)}
+                                          isStarter={false}
+                                          sport="mlb"
+                                        />
+                                      ))}
+                                    </div>
+                                    {bullpen.length > 6 && (
+                                      <button className="w-full text-center py-2 text-xs text-gray-500 hover:text-gray-400 transition-colors">
+                                        +{bullpen.length - 6} more relievers
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </>
+                            );
+                          })()}
                         </>
                       )}
                     </div>
@@ -2093,7 +2556,9 @@ export default function GamenightApp() {
         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         .animate-pulse { animation: pulse 2s ease-in-out infinite; }
+        .animate-fadeIn { animation: fadeIn 0.3s ease-out; }
       `}</style>
     </div>
   );
