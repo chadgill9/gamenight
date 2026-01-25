@@ -376,12 +376,61 @@ const api = {
       
       // Parse last 5 games from schedule
       let lastFiveGames = [];
+      let todayGame = null;
+      let probableStarter = null;
+      
       try {
         if (scheduleRes.ok) {
           const scheduleData = await scheduleRes.json();
           const events = scheduleData.events || [];
-          // Filter completed games and get last 5
           const now = new Date();
+          const today = now.toDateString();
+          
+          // Find today's game for MLB starting pitcher
+          if (sport === 'mlb') {
+            const todayEvent = events.find(e => {
+              const gameDate = new Date(e.date);
+              return gameDate.toDateString() === today;
+            });
+            
+            if (todayEvent) {
+              const comp = todayEvent.competitions?.[0];
+              const teamIdStr = String(teamId).toUpperCase();
+              const homeTeam = comp?.competitors?.find(c => c.homeAway === 'home');
+              const awayTeam = comp?.competitors?.find(c => c.homeAway === 'away');
+              const isHome = homeTeam?.team?.abbreviation === teamIdStr || 
+                            String(homeTeam?.team?.id) === teamIdStr;
+              const ourTeam = isHome ? homeTeam : awayTeam;
+              
+              // Get probable pitcher from competition data
+              const probablePitchers = comp?.probables || [];
+              const ourProbable = probablePitchers.find(p => {
+                const pitcherTeamId = p.team?.id || p.teamId;
+                return String(pitcherTeamId) === String(ourTeam?.team?.id);
+              });
+              
+              if (ourProbable?.athlete) {
+                probableStarter = {
+                  id: ourProbable.athlete.id,
+                  name: ourProbable.athlete.displayName || ourProbable.athlete.fullName,
+                  headshot: ourProbable.athlete.headshot?.href,
+                  throws: ourProbable.athlete.hand?.abbreviation || ourProbable.athlete.throws,
+                  stats: ourProbable.statistics || [],
+                  confirmed: true
+                };
+              }
+              
+              todayGame = {
+                opponent: isHome ? awayTeam?.team?.displayName : homeTeam?.team?.displayName,
+                opponentAbbr: isHome ? awayTeam?.team?.abbreviation : homeTeam?.team?.abbreviation,
+                time: todayEvent.date,
+                isHome: isHome,
+                status: comp?.status?.type?.name
+              };
+            }
+          }
+          
+          // Filter completed games and get last 5
           const completedGames = events
             .filter(e => {
               const status = e.competitions?.[0]?.status;
@@ -628,6 +677,10 @@ const api = {
             date: nextEvent.date,
             isHome: nextEvent.competitions?.[0]?.competitors?.find(c => c.team?.id === team.id)?.homeAway === 'home'
           } : null,
+          
+          // MLB-specific data
+          todayGame: todayGame,
+          probableStarter: probableStarter,
           
           // Roster & Injuries
           roster: sortedRoster,
@@ -1038,6 +1091,7 @@ export default function GamenightApp() {
   const [challenge, setChallenge] = useState(null);
   const [userStats, setUserStats] = useState({ points: 0, streak: 0, accuracy: 0 });
   const [userPrediction, setUserPrediction] = useState(null); // User's locked-in vote
+  const [showMLBOtherPlayers, setShowMLBOtherPlayers] = useState(false); // MLB roster collapse state
   
   // Settings (local)
   const [settings, setSettings] = useState(() => {
@@ -2195,101 +2249,269 @@ export default function GamenightApp() {
                           })()}
                           
                           {/* ============ MLB ROSTER ============ */}
+                          {/* Game-Day Focused Hierarchy: Starting Pitcher → Batting Lineup → Other Players */}
                           {activeSport === 'mlb' && (() => {
-                            const startingPitchers = teamDetails.roster.filter(p => p.position === 'SP');
+                            // Separate all players into categories
+                            const allPitchers = teamDetails.roster.filter(p => ['SP', 'RP', 'CL', 'P'].includes(p.position));
+                            const startingPitchers = allPitchers.filter(p => p.position === 'SP');
+                            const bullpen = allPitchers.filter(p => ['RP', 'CL', 'P'].includes(p.position));
                             const positionPlayers = teamDetails.roster.filter(p => !['SP', 'RP', 'CL', 'P'].includes(p.position));
-                            const bullpen = teamDetails.roster.filter(p => ['RP', 'CL', 'P'].includes(p.position));
                             
-                            // Sort position players by typical batting order
-                            const battingOrder = { 'CF': 1, 'SS': 2, '1B': 3, 'DH': 4, 'RF': 5, 'LF': 6, '3B': 7, 'C': 8, '2B': 9, 'OF': 10, 'IF': 11, 'UT': 12 };
-                            positionPlayers.sort((a, b) => (battingOrder[a.position] || 99) - (battingOrder[b.position] || 99));
+                            // Find today's starting pitcher from probableStarter data
+                            const todayStarter = teamDetails.probableStarter;
+                            const todayGame = teamDetails.todayGame;
+                            
+                            // Match today's starter to roster for full data
+                            let confirmedStarter = null;
+                            if (todayStarter?.id) {
+                              confirmedStarter = startingPitchers.find(p => String(p.id) === String(todayStarter.id));
+                              if (confirmedStarter) {
+                                confirmedStarter = { ...confirmedStarter, ...todayStarter, isStartingToday: true };
+                              }
+                            }
+                            
+                            // Other SPs (not starting today)
+                            const otherStarters = startingPitchers.filter(p => 
+                              !confirmedStarter || String(p.id) !== String(confirmedStarter.id)
+                            );
+                            
+                            // Typical batting order positions (for lineup estimation when no live data)
+                            const battingPositionOrder = { 
+                              'CF': 1, 'LF': 2, 'RF': 3, 'SS': 4, '1B': 5, 
+                              '3B': 6, 'DH': 7, 'C': 8, '2B': 9, 
+                              'OF': 10, 'IF': 11, 'UT': 12 
+                            };
+                            
+                            // Sort position players by batting relevance, then experience
+                            const sortedPositionPlayers = [...positionPlayers].sort((a, b) => {
+                              const orderA = battingPositionOrder[a.position] || 99;
+                              const orderB = battingPositionOrder[b.position] || 99;
+                              if (orderA !== orderB) return orderA - orderB;
+                              return (b.experience || 0) - (a.experience || 0);
+                            });
+                            
+                            // Probable lineup (first 9 position players)
+                            const probableLineup = sortedPositionPlayers.slice(0, 9);
+                            const benchPlayers = sortedPositionPlayers.slice(9);
+                            
+                            // Verification log
+                            console.log('[MLB Roster Verification]', {
+                              startingPitcher: confirmedStarter?.name || 'TBD',
+                              lineupCount: probableLineup.length,
+                              benchCount: benchPlayers.length,
+                              bullpenCount: bullpen.length,
+                              otherStartersCount: otherStarters.length,
+                              totalRoster: teamDetails.roster.length,
+                              allAccountedFor: (confirmedStarter ? 1 : 0) + otherStarters.length + probableLineup.length + benchPlayers.length + bullpen.length
+                            });
                             
                             return (
                               <>
-                                {/* Starting Rotation */}
-                                {startingPitchers.length > 0 && (
-                                  <div className="mb-6">
-                                    <div className="flex items-center gap-2 mb-3">
-                                      <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Starting Rotation</span>
-                                    </div>
-                                    <div className="space-y-1">
-                                      {startingPitchers.map((player, i) => (
-                                        <RosterRow 
-                                          key={player.id || i} 
-                                          player={player} 
-                                          onClick={() => setSelectedPlayer(player)}
-                                          isStarter={true}
-                                          sport="mlb"
-                                          showPitcherHand={true}
-                                        />
-                                      ))}
-                                    </div>
+                                {/* ======= SECTION 1: STARTING PITCHER (ALWAYS FIRST) ======= */}
+                                <div className="mb-6">
+                                  <div className="flex items-center gap-2 mb-3">
+                                    <div className="w-2 h-2 rounded-full bg-red-500"></div>
+                                    <span className="text-xs font-bold text-red-400 uppercase tracking-wider">Starting Pitcher</span>
+                                    {todayGame && (
+                                      <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full ml-auto">
+                                        {todayGame.isHome ? 'vs' : '@'} {todayGame.opponentAbbr || todayGame.opponent}
+                                      </span>
+                                    )}
                                   </div>
-                                )}
-                                
-                                {/* Lineup / Position Players */}
-                                {positionPlayers.length > 0 && (
-                                  <div className="mb-6">
-                                    <div className="flex items-center gap-2 mb-3">
-                                      <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Lineup</span>
-                                      <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">Typical Order</span>
-                                    </div>
-                                    <div className="space-y-1">
-                                      {positionPlayers.slice(0, 9).map((player, i) => (
-                                        <RosterRow 
-                                          key={player.id || i} 
-                                          player={player} 
-                                          onClick={() => setSelectedPlayer(player)}
-                                          isStarter={true}
-                                          sport="mlb"
-                                          battingOrder={i + 1}
-                                        />
-                                      ))}
-                                    </div>
-                                    {positionPlayers.length > 9 && (
-                                      <div className="mt-4">
-                                        <div className="text-xs text-gray-500 mb-2">Bench</div>
-                                        <div className="space-y-1">
-                                          {positionPlayers.slice(9).map((player, i) => (
-                                            <RosterRow 
-                                              key={player.id || i} 
-                                              player={player} 
-                                              onClick={() => setSelectedPlayer(player)}
-                                              isStarter={false}
-                                              sport="mlb"
-                                            />
-                                          ))}
+                                  
+                                  {confirmedStarter ? (
+                                    <div 
+                                      className="bg-gradient-to-r from-red-500/10 to-transparent border border-red-500/20 rounded-xl p-4 cursor-pointer hover:bg-red-500/15 transition-colors"
+                                      onClick={() => setSelectedPlayer(confirmedStarter)}
+                                    >
+                                      <div className="flex items-center gap-4">
+                                        <div className="relative">
+                                          {confirmedStarter.headshot ? (
+                                            <img src={confirmedStarter.headshot} alt="" className="w-14 h-14 rounded-full object-cover bg-gray-800" />
+                                          ) : (
+                                            <div className="w-14 h-14 rounded-full bg-gray-800 flex items-center justify-center text-gray-500 text-lg font-bold">
+                                              {confirmedStarter.name?.charAt(0)}
+                                            </div>
+                                          )}
+                                          <div className="absolute -bottom-1 -right-1 bg-red-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded">
+                                            SP
+                                          </div>
+                                        </div>
+                                        <div className="flex-1">
+                                          <div className="flex items-center gap-2">
+                                            <span className="font-semibold text-white">{confirmedStarter.name}</span>
+                                            {confirmedStarter.throws && (
+                                              <span className="text-[10px] text-gray-400 bg-white/10 px-1.5 py-0.5 rounded">
+                                                {confirmedStarter.throws === 'L' ? 'LHP' : 'RHP'}
+                                              </span>
+                                            )}
+                                          </div>
+                                          <div className="text-xs text-gray-400 mt-1">
+                                            {todayGame ? (
+                                              <span className="text-green-400 font-medium">Starting Today</span>
+                                            ) : (
+                                              <span>#{confirmedStarter.jersey}</span>
+                                            )}
+                                          </div>
+                                        </div>
+                                        <div className="text-right">
+                                          <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                          </svg>
                                         </div>
                                       </div>
-                                    )}
-                                  </div>
-                                )}
+                                    </div>
+                                  ) : (
+                                    <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-4">
+                                      <div className="flex items-center gap-4">
+                                        <div className="w-14 h-14 rounded-full bg-gray-700/50 flex items-center justify-center">
+                                          <span className="text-2xl text-gray-500">?</span>
+                                        </div>
+                                        <div>
+                                          <div className="font-semibold text-gray-400">Starting Pitcher TBD</div>
+                                          <div className="text-xs text-gray-500 mt-1">
+                                            {todayGame ? 'Not yet announced' : 'No game scheduled today'}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
                                 
-                                {/* Bullpen */}
-                                {bullpen.length > 0 && (
-                                  <div>
-                                    <div className="flex items-center gap-2 mb-3">
-                                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Bullpen</span>
-                                      <span className="text-[10px] text-gray-600">{bullpen.length}</span>
-                                    </div>
-                                    <div className="space-y-1">
-                                      {bullpen.slice(0, 6).map((player, i) => (
-                                        <RosterRow 
-                                          key={player.id || i} 
-                                          player={player} 
-                                          onClick={() => setSelectedPlayer(player)}
-                                          isStarter={false}
-                                          sport="mlb"
-                                        />
-                                      ))}
-                                    </div>
-                                    {bullpen.length > 6 && (
-                                      <button className="w-full text-center py-2 text-xs text-gray-500 hover:text-gray-400 transition-colors">
-                                        +{bullpen.length - 6} more relievers
-                                      </button>
-                                    )}
+                                {/* ======= SECTION 2: BATTING LINEUP ======= */}
+                                <div className="mb-6">
+                                  <div className="flex items-center gap-2 mb-3">
+                                    <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+                                    <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Batting Lineup</span>
+                                    <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">Projected</span>
                                   </div>
-                                )}
+                                  
+                                  <div className="space-y-1">
+                                    {probableLineup.map((player, i) => (
+                                      <div
+                                        key={player.id || i}
+                                        className="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 cursor-pointer transition-colors group"
+                                        onClick={() => setSelectedPlayer(player)}
+                                      >
+                                        {/* Batting Order Number */}
+                                        <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center">
+                                          <span className="text-xs font-bold text-emerald-400">{i + 1}</span>
+                                        </div>
+                                        
+                                        {/* Player Photo */}
+                                        {player.headshot ? (
+                                          <img src={player.headshot} alt="" className="w-10 h-10 rounded-full object-cover bg-gray-800" />
+                                        ) : (
+                                          <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-gray-500 text-sm font-bold">
+                                            {player.name?.charAt(0)}
+                                          </div>
+                                        )}
+                                        
+                                        {/* Player Info */}
+                                        <div className="flex-1 min-w-0">
+                                          <div className="font-medium text-white truncate">{player.name}</div>
+                                          <div className="text-xs text-gray-500">
+                                            {player.position} {player.jersey && `#${player.jersey}`}
+                                          </div>
+                                        </div>
+                                        
+                                        {/* Arrow */}
+                                        <svg className="w-4 h-4 text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                        </svg>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  
+                                  {probableLineup.length < 9 && (
+                                    <div className="mt-2 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+                                      <div className="text-xs text-yellow-400">
+                                        ⚠️ Lineup incomplete ({probableLineup.length}/9 positions filled)
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                                
+                                {/* ======= SECTION 3: OTHER PLAYERS (Collapsed by Default) ======= */}
+                                <div className="border-t border-gray-800 pt-4">
+                                  <button
+                                    className="w-full flex items-center justify-between py-2 text-left"
+                                    onClick={() => setShowMLBOtherPlayers(!showMLBOtherPlayers)}
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <div className="w-2 h-2 rounded-full bg-gray-500"></div>
+                                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Other Players</span>
+                                      <span className="text-[10px] text-gray-600 bg-white/5 px-2 py-0.5 rounded-full">
+                                        {otherStarters.length + benchPlayers.length + bullpen.length}
+                                      </span>
+                                    </div>
+                                    <svg 
+                                      className={`w-4 h-4 text-gray-500 transition-transform ${showMLBOtherPlayers ? 'rotate-180' : ''}`} 
+                                      fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                                    >
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                  </button>
+                                  
+                                  {showMLBOtherPlayers && (
+                                    <div className="mt-3 space-y-4 opacity-75">
+                                      {/* Starting Rotation (others) */}
+                                      {otherStarters.length > 0 && (
+                                        <div>
+                                          <div className="text-[10px] text-gray-600 uppercase tracking-wider mb-2">Starting Rotation</div>
+                                          <div className="space-y-1">
+                                            {otherStarters.map((player, i) => (
+                                              <RosterRow 
+                                                key={player.id || i} 
+                                                player={player} 
+                                                onClick={() => setSelectedPlayer(player)}
+                                                isStarter={false}
+                                                sport="mlb"
+                                                showPitcherHand={true}
+                                              />
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      
+                                      {/* Bullpen */}
+                                      {bullpen.length > 0 && (
+                                        <div>
+                                          <div className="text-[10px] text-gray-600 uppercase tracking-wider mb-2">Bullpen ({bullpen.length})</div>
+                                          <div className="space-y-1">
+                                            {bullpen.map((player, i) => (
+                                              <RosterRow 
+                                                key={player.id || i} 
+                                                player={player} 
+                                                onClick={() => setSelectedPlayer(player)}
+                                                isStarter={false}
+                                                sport="mlb"
+                                              />
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      
+                                      {/* Bench */}
+                                      {benchPlayers.length > 0 && (
+                                        <div>
+                                          <div className="text-[10px] text-gray-600 uppercase tracking-wider mb-2">Bench ({benchPlayers.length})</div>
+                                          <div className="space-y-1">
+                                            {benchPlayers.map((player, i) => (
+                                              <RosterRow 
+                                                key={player.id || i} 
+                                                player={player} 
+                                                onClick={() => setSelectedPlayer(player)}
+                                                isStarter={false}
+                                                sport="mlb"
+                                              />
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
                               </>
                             );
                           })()}
