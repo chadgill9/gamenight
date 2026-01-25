@@ -1092,6 +1092,8 @@ export default function GamenightApp() {
   const [userStats, setUserStats] = useState({ points: 0, streak: 0, accuracy: 0 });
   const [userPrediction, setUserPrediction] = useState(null); // User's locked-in vote
   const [showMLBOtherPlayers, setShowMLBOtherPlayers] = useState(false); // MLB roster collapse state
+  const [showNFLDepth, setShowNFLDepth] = useState(false); // NFL depth players collapse
+  const [showNFLInjured, setShowNFLInjured] = useState(false); // NFL injured players collapse
   
   // Settings (local)
   const [settings, setSettings] = useState(() => {
@@ -2103,22 +2105,8 @@ export default function GamenightApp() {
                           })()}
                           
                           {/* ============ NFL ROSTER ============ */}
+                          {/* KEY PLAYERS ONLY: One starter per position group, not all backups */}
                           {activeSport === 'nfl' && (() => {
-                            /*
-                             * NFL Relevance Sorting Strategy
-                             * ================================
-                             * CRITICAL: ESPN roster is alphabetical, NOT depth chart order
-                             * 
-                             * Primary QB Detection (since no depth chart available):
-                             * 1. Prefer youngest QB with low experience (likely drafted starter)
-                             * 2. Among young QBs, prefer lower jersey number
-                             * 3. Fallback: first QB in list
-                             * 
-                             * This correctly identifies:
-                             * - Drake Maye (23yo, 2yr exp, #10) over Josh Dobbs (30yo, 9yr, #11)
-                             * - Caleb Williams over veteran backups
-                             */
-                            
                             // Check if player is injured/out
                             const isOut = (player) => {
                               const status = player.status?.toLowerCase() || '';
@@ -2126,58 +2114,115 @@ export default function GamenightApp() {
                                      status === 'pup' || status === 'nfi' || status === 'suspended';
                             };
                             
-                            // Base relevance scores by position
-                            const baseRelevance = {
-                              'QB': 55,  // Default for backup QBs
-                              'RB': 10, 'WR': 11, 'TE': 12,
-                              'CB': 20, 'DE': 21, 'OLB': 22, 'S': 23, 'FS': 24, 'SS': 25,
-                              'DT': 30, 'NT': 31, 'ILB': 32, 'MLB': 33, 'LB': 34, 'DL': 35, 'DB': 36,
-                              'LT': 40, 'RT': 41, 'LG': 42, 'RG': 43, 'C': 44, 'OL': 45, 'OT': 46, 'G': 47, 'T': 48,
-                              'FB': 50,
-                              'K': 60, 'P': 61, 'LS': 62
+                            // Position groups for NFL key players (we want ONE starter from each)
+                            const positionGroups = {
+                              'QB': ['QB'],
+                              'RB': ['RB', 'FB'],
+                              'WR1': ['WR'],
+                              'WR2': ['WR'],  // We'll pick 2 WRs
+                              'TE': ['TE'],
+                              'LT': ['LT', 'OT', 'T'],
+                              'C': ['C'],
+                              'DE1': ['DE', 'EDGE', 'OLB'],
+                              'DE2': ['DE', 'EDGE', 'OLB'],
+                              'DT': ['DT', 'NT', 'DL'],
+                              'LB': ['LB', 'ILB', 'MLB'],
+                              'CB1': ['CB', 'DB'],
+                              'CB2': ['CB', 'DB'],
+                              'S': ['S', 'FS', 'SS']
                             };
                             
-                            // Find all QBs
-                            const allQBs = teamDetails.roster.filter(p => p.position === 'QB' && !isOut(p));
+                            // The roster is sorted by depth chart - first player at each position is the starter
+                            const activePlayers = teamDetails.roster.filter(p => !isOut(p));
+                            const outPlayers = teamDetails.roster.filter(p => isOut(p));
                             
-                            // The roster is already sorted by depth chart (QB1 first, etc.)
-                            // Just use the first QB in the list as the primary
-                            const primaryQB = allQBs[0] || null;
-                            const primaryQBId = primaryQB?.id;
+                            // Pick KEY players: first (starter) from each position group
+                            const keyPlayers = [];
+                            const usedIds = new Set();
+                            const positionCounts = {};
                             
-                            // Use roster order from depth chart sorting
-                            // Just mark players with metadata for display
-                            const scoredRoster = teamDetails.roster.map((player, index) => {
-                              return {
-                                ...player,
-                                _relevanceScore: index, // Preserve depth chart order
-                                _isPrimaryQB: player.position === 'QB' && player.id === primaryQBId,
-                                _isOut: isOut(player)
-                              };
+                            // Go through roster in depth chart order and pick starters
+                            activePlayers.forEach(player => {
+                              const pos = player.position;
+                              
+                              // Track how many we've picked from each position
+                              positionCounts[pos] = (positionCounts[pos] || 0);
+                              
+                              // Determine if this player should be a "key player"
+                              let isKey = false;
+                              
+                              // QB: Only the starter (first one)
+                              if (pos === 'QB' && positionCounts['QB'] === 0) {
+                                isKey = true;
+                              }
+                              // RB: Top 1
+                              else if ((pos === 'RB' || pos === 'FB') && (positionCounts['RB'] || 0) + (positionCounts['FB'] || 0) < 1) {
+                                isKey = true;
+                              }
+                              // WR: Top 2
+                              else if (pos === 'WR' && positionCounts['WR'] < 2) {
+                                isKey = true;
+                              }
+                              // TE: Top 1
+                              else if (pos === 'TE' && positionCounts['TE'] < 1) {
+                                isKey = true;
+                              }
+                              // OL: Top 2 (LT and C typically)
+                              else if (['LT', 'RT', 'OT', 'T', 'C', 'G', 'LG', 'RG', 'OL'].includes(pos) && 
+                                       keyPlayers.filter(p => ['LT', 'RT', 'OT', 'T', 'C', 'G', 'LG', 'RG', 'OL'].includes(p.position)).length < 2) {
+                                isKey = true;
+                              }
+                              // DE/EDGE: Top 2
+                              else if (['DE', 'EDGE', 'OLB'].includes(pos) && 
+                                       keyPlayers.filter(p => ['DE', 'EDGE', 'OLB'].includes(p.position)).length < 2) {
+                                isKey = true;
+                              }
+                              // DT/NT: Top 1
+                              else if (['DT', 'NT', 'DL'].includes(pos) && 
+                                       keyPlayers.filter(p => ['DT', 'NT', 'DL'].includes(p.position)).length < 1) {
+                                isKey = true;
+                              }
+                              // LB: Top 1
+                              else if (['LB', 'ILB', 'MLB'].includes(pos) && 
+                                       keyPlayers.filter(p => ['LB', 'ILB', 'MLB'].includes(p.position)).length < 1) {
+                                isKey = true;
+                              }
+                              // CB: Top 2
+                              else if (['CB', 'DB'].includes(pos) && 
+                                       keyPlayers.filter(p => ['CB', 'DB'].includes(p.position)).length < 2) {
+                                isKey = true;
+                              }
+                              // Safety: Top 1
+                              else if (['S', 'FS', 'SS'].includes(pos) && 
+                                       keyPlayers.filter(p => ['S', 'FS', 'SS'].includes(p.position)).length < 1) {
+                                isKey = true;
+                              }
+                              
+                              if (isKey && !usedIds.has(player.id)) {
+                                keyPlayers.push({ ...player, _isPrimaryQB: pos === 'QB' && keyPlayers.filter(p => p.position === 'QB').length === 0 });
+                                usedIds.add(player.id);
+                                positionCounts[pos] = (positionCounts[pos] || 0) + 1;
+                              }
                             });
                             
-                            // Split into display sections - keep order, just separate out players
-                            const activePlayers = scoredRoster.filter(p => !p._isOut);
-                            const outPlayers = scoredRoster.filter(p => p._isOut);
+                            // Remaining players (depth)
+                            const depthPlayers = activePlayers.filter(p => !usedIds.has(p.id));
                             
-                            const keyPlayers = activePlayers.slice(0, 12);
-                            const depthPlayers = activePlayers.slice(12);
-                            
-                            // Debug logging - verify correct QB selection
-                            console.log('[NFL Roster Debug]', {
-                              totalRoster: teamDetails.roster.length,
-                              allQBs: allQBs.map(q => `${q.name} (#${q.jersey}, age:${q.age}, exp:${q.experience})`),
-                              primaryQB: primaryQB ? `${primaryQB.name} (#${primaryQB.jersey})` : 'none',
-                              keyPlayersTop5: keyPlayers.slice(0, 5).map(p => `${p.position}: ${p.name} (score:${p._relevanceScore})`)
+                            // Debug logging
+                            console.log('[NFL Key Players]', {
+                              keyPlayersCount: keyPlayers.length,
+                              keyPlayers: keyPlayers.map(p => `${p.position}: ${p.name}`),
+                              depthCount: depthPlayers.length,
+                              outCount: outPlayers.length
                             });
                             
                             return (
                               <>
-                                {/* Key Players */}
+                                {/* Key Players - Starters Only */}
                                 <div className="mb-6">
                                   <div className="flex items-center gap-2 mb-3">
                                     <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Key Players</span>
-                                    <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">By Impact</span>
+                                    <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">Starters</span>
                                   </div>
                                   <div className="space-y-1">
                                     {keyPlayers.map((player, i) => (
@@ -2192,55 +2237,73 @@ export default function GamenightApp() {
                                   </div>
                                 </div>
                                 
-                                {/* Depth / Bench */}
+                                {/* Depth / Backups - Collapsed */}
                                 {depthPlayers.length > 0 && (
-                                  <div className="mb-6">
-                                    <div className="flex items-center gap-2 mb-3">
-                                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Depth / Rotation</span>
-                                      <span className="text-[10px] text-gray-600">{depthPlayers.length}</span>
-                                    </div>
-                                    <div className="space-y-1">
-                                      {depthPlayers.slice(0, 10).map((player, i) => (
-                                        <RosterRow 
-                                          key={player.id || i} 
-                                          player={player} 
-                                          onClick={() => setSelectedPlayer(player)}
-                                          isStarter={false}
-                                          sport="nfl"
-                                        />
-                                      ))}
-                                    </div>
-                                    {depthPlayers.length > 10 && (
-                                      <button className="w-full text-center py-3 text-xs text-gray-500 hover:text-gray-400 transition-colors">
-                                        +{depthPlayers.length - 10} more players
-                                      </button>
+                                  <div className="mb-6 border-t border-gray-800 pt-4">
+                                    <button
+                                      className="w-full flex items-center justify-between py-2 text-left"
+                                      onClick={() => setShowNFLDepth(!showNFLDepth)}
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Depth / Rotation</span>
+                                        <span className="text-[10px] text-gray-600 bg-white/5 px-2 py-0.5 rounded-full">{depthPlayers.length}</span>
+                                      </div>
+                                      <svg 
+                                        className={`w-4 h-4 text-gray-500 transition-transform ${showNFLDepth ? 'rotate-180' : ''}`} 
+                                        fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                                      >
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                      </svg>
+                                    </button>
+                                    
+                                    {showNFLDepth && (
+                                      <div className="mt-3 space-y-1 opacity-75">
+                                        {depthPlayers.map((player, i) => (
+                                          <RosterRow 
+                                            key={player.id || i} 
+                                            player={player} 
+                                            onClick={() => setSelectedPlayer(player)}
+                                            isStarter={false}
+                                            sport="nfl"
+                                          />
+                                        ))}
+                                      </div>
                                     )}
                                   </div>
                                 )}
                                 
-                                {/* Injured / Out */}
+                                {/* Injured / Out - Collapsed */}
                                 {outPlayers.length > 0 && (
-                                  <div>
-                                    <div className="flex items-center gap-2 mb-3">
-                                      <span className="w-2 h-2 rounded-full bg-red-500" />
-                                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Injured / Out</span>
-                                      <span className="text-[10px] text-gray-600">{outPlayers.length}</span>
-                                    </div>
-                                    <div className="space-y-1">
-                                      {outPlayers.slice(0, 5).map((player, i) => (
-                                        <RosterRow 
-                                          key={player.id || i} 
-                                          player={player} 
-                                          onClick={() => setSelectedPlayer(player)}
-                                          isStarter={false}
-                                          sport="nfl"
-                                        />
-                                      ))}
-                                    </div>
-                                    {outPlayers.length > 5 && (
-                                      <button className="w-full text-center py-3 text-xs text-gray-500 hover:text-gray-400 transition-colors">
-                                        +{outPlayers.length - 5} more
-                                      </button>
+                                  <div className="border-t border-gray-800 pt-4">
+                                    <button
+                                      className="w-full flex items-center justify-between py-2 text-left"
+                                      onClick={() => setShowNFLInjured(!showNFLInjured)}
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <span className="w-2 h-2 rounded-full bg-red-500" />
+                                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Injured / Out</span>
+                                        <span className="text-[10px] text-gray-600 bg-white/5 px-2 py-0.5 rounded-full">{outPlayers.length}</span>
+                                      </div>
+                                      <svg 
+                                        className={`w-4 h-4 text-gray-500 transition-transform ${showNFLInjured ? 'rotate-180' : ''}`} 
+                                        fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                                      >
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                      </svg>
+                                    </button>
+                                    
+                                    {showNFLInjured && (
+                                      <div className="mt-3 space-y-1 opacity-75">
+                                        {outPlayers.map((player, i) => (
+                                          <RosterRow 
+                                            key={player.id || i} 
+                                            player={player} 
+                                            onClick={() => setSelectedPlayer(player)}
+                                            isStarter={false}
+                                            sport="nfl"
+                                          />
+                                        ))}
+                                      </div>
                                     )}
                                   </div>
                                 )}
