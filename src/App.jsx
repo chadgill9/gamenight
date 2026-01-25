@@ -222,9 +222,11 @@ const sortRosterBySport = (roster, sport, depthChartData = null) => {
   
   if (sport === 'nfl') {
     // NFL: Use depth chart data if available for official ordering
+    console.log('NFL sorting - depthChartData available:', !!depthChartData);
     if (depthChartData) {
       const depthSorted = sortNFLRosterWithDepthChart(roster, depthChartData);
       if (depthSorted) {
+        console.log('Using depth chart sorting, first player:', depthSorted[0]?.name);
         return depthSorted;
       }
     }
@@ -334,7 +336,9 @@ const api = {
       // For NFL, also fetch depth chart using numeric team ID
       let depthChartPromise = null;
       if (sport === 'nfl') {
-        const numericTeamId = NFL_TEAM_IDS[teamId.toUpperCase()] || NFL_TEAM_IDS[teamId];
+        const teamIdUpper = typeof teamId === 'string' ? teamId.toUpperCase() : teamId;
+        const numericTeamId = NFL_TEAM_IDS[teamIdUpper];
+        console.log('NFL Depth Chart Debug:', { teamId, teamIdUpper, numericTeamId });
         if (numericTeamId) {
           depthChartPromise = fetch(`${ESPN_PROXY}?sport=${sport}&endpoint=depthchart&teamId=${numericTeamId}`);
           fetchPromises.push(depthChartPromise);
@@ -358,11 +362,15 @@ const api = {
       
       // Parse depth chart data for NFL
       let depthChartData = null;
-      if (sport === 'nfl' && depthChartRes?.ok) {
-        try {
-          depthChartData = await depthChartRes.json();
-        } catch (e) {
-          console.error('Depth chart parse error:', e);
+      if (sport === 'nfl' && depthChartRes) {
+        console.log('Depth chart response:', { ok: depthChartRes.ok, status: depthChartRes.status });
+        if (depthChartRes.ok) {
+          try {
+            depthChartData = await depthChartRes.json();
+            console.log('Depth chart data loaded:', depthChartData?.depthchart?.length, 'formations');
+          } catch (e) {
+            console.error('Depth chart parse error:', e);
+          }
         }
       }
       
