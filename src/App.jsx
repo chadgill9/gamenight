@@ -138,7 +138,6 @@ const api = {
     if (games.length === 0) {
       return { pick: null, message: 'No games today' };
     }
-    }
     const bestGame = games[0];
     return {
       pick: {
