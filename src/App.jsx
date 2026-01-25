@@ -2086,64 +2086,23 @@ export default function GamenightApp() {
                             // Find all QBs
                             const allQBs = teamDetails.roster.filter(p => p.position === 'QB' && !isOut(p));
                             
-                            // Determine primary QB using heuristics:
-                            // Young QB (<=26) with low experience (<=3 years) = likely drafted franchise QB
-                            // Among candidates, prefer lower jersey number
-                            let primaryQB = null;
-                            
-                            if (allQBs.length > 0) {
-                              // First, look for young franchise QB (age <=26, experience <=3)
-                              const youngQBs = allQBs.filter(qb => 
-                                (qb.age || 30) <= 26 && (qb.experience || 10) <= 3
-                              );
-                              
-                              if (youngQBs.length > 0) {
-                                // Among young QBs, pick lowest jersey number
-                                primaryQB = youngQBs.sort((a, b) => 
-                                  (parseInt(a.jersey) || 99) - (parseInt(b.jersey) || 99)
-                                )[0];
-                              } else {
-                                // No young franchise QB - pick by lowest jersey number among all
-                                primaryQB = allQBs.sort((a, b) => 
-                                  (parseInt(a.jersey) || 99) - (parseInt(b.jersey) || 99)
-                                )[0];
-                              }
-                            }
-                            
+                            // The roster is already sorted by depth chart (QB1 first, etc.)
+                            // Just use the first QB in the list as the primary
+                            const primaryQB = allQBs[0] || null;
                             const primaryQBId = primaryQB?.id;
                             
-                            // Assign relevance score to EVERY player (no filtering!)
-                            const scoredRoster = teamDetails.roster.map(player => {
-                              let score = baseRelevance[player.position] || 99;
-                              
-                              // Primary QB gets Tier 0 (score 0)
-                              if (player.position === 'QB' && player.id === primaryQBId) {
-                                score = 0;
-                              }
-                              
-                              // Out/IR players get pushed to bottom (add 1000)
-                              if (isOut(player)) {
-                                score += 1000;
-                              }
-                              
+                            // Use roster order from depth chart sorting
+                            // Just mark players with metadata for display
+                            const scoredRoster = teamDetails.roster.map((player, index) => {
                               return {
                                 ...player,
-                                _relevanceScore: score,
+                                _relevanceScore: index, // Preserve depth chart order
                                 _isPrimaryQB: player.position === 'QB' && player.id === primaryQBId,
                                 _isOut: isOut(player)
                               };
                             });
                             
-                            // Sort by relevance score, then experience as tiebreaker
-                            scoredRoster.sort((a, b) => {
-                              if (a._relevanceScore !== b._relevanceScore) {
-                                return a._relevanceScore - b._relevanceScore;
-                              }
-                              // Same score: higher experience first (for non-QB positions)
-                              return (b.experience || 0) - (a.experience || 0);
-                            });
-                            
-                            // Split into display sections (no players removed!)
+                            // Split into display sections - keep order, just separate out players
                             const activePlayers = scoredRoster.filter(p => !p._isOut);
                             const outPlayers = scoredRoster.filter(p => p._isOut);
                             
