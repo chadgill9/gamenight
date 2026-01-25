@@ -9,6 +9,45 @@ const API_BASE = `${SUPABASE_URL}/functions/v1`;
 // ESPN API via Supabase proxy (avoids CORS issues)
 const ESPN_PROXY = `${API_BASE}/espn-proxy`;
 
+// ============================================
+// ERROR LOGGING & MONITORING
+// ============================================
+const logError = async (error, context = {}) => {
+  const errorData = {
+    message: error?.message || String(error),
+    stack: error?.stack,
+    context,
+    url: window.location.href,
+    userAgent: navigator.userAgent,
+    timestamp: new Date().toISOString(),
+    deviceId: localStorage.getItem('gn_device_id')
+  };
+  
+  // Always log to console
+  console.error('[Gamenight Error]', errorData);
+  
+  // Try to send to Supabase (fire and forget, don't block)
+  try {
+    fetch(`${API_BASE}/log-error`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(errorData)
+    }).catch(() => {}); // Silently fail if logging fails
+  } catch (e) {
+    // Ignore logging failures
+  }
+};
+
+// Global error handler
+window.onerror = (message, source, lineno, colno, error) => {
+  logError(error || message, { source, lineno, colno, type: 'uncaught' });
+};
+
+// Unhandled promise rejection handler
+window.onunhandledrejection = (event) => {
+  logError(event.reason, { type: 'unhandledRejection' });
+};
+
 // Get or create device ID for anonymous users
 const getDeviceId = () => {
   let deviceId = localStorage.getItem('gn_device_id');
@@ -1094,6 +1133,20 @@ export default function GamenightApp() {
   const [showMLBOtherPlayers, setShowMLBOtherPlayers] = useState(false); // MLB roster collapse state
   const [showNFLDepth, setShowNFLDepth] = useState(false); // NFL depth players collapse
   const [showNFLInjured, setShowNFLInjured] = useState(false); // NFL injured players collapse
+  const [isOffline, setIsOffline] = useState(!navigator.onLine); // Network status
+  const [lastUpdated, setLastUpdated] = useState(null); // When data was last fetched
+  
+  // Monitor online/offline status
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
   
   // Settings (local)
   const [settings, setSettings] = useState(() => {
@@ -1104,6 +1157,7 @@ export default function GamenightApp() {
   // Challenge state
   const [selectedPrediction, setSelectedPrediction] = useState(null); // Currently selected (before submit)
   const [submitting, setSubmitting] = useState(false);
+  const [loadingTimeout, setLoadingTimeout] = useState(false); // Track if loading took too long
 
   // Save settings
   useEffect(() => {
@@ -1115,6 +1169,13 @@ export default function GamenightApp() {
     const loadData = async () => {
       setLoading(true);
       setLoadError(null);
+      setLoadingTimeout(false);
+      
+      // Set timeout - if loading takes > 15 seconds, show retry option
+      const timeoutId = setTimeout(() => {
+        setLoadingTimeout(true);
+      }, 15000);
+      
       try {
         const [pickRes, gamesRes, challengeRes, statsRes] = await Promise.all([
           api.getPicksToday(activeSport),
@@ -1122,6 +1183,8 @@ export default function GamenightApp() {
           api.getChallengeToday(activeSport),
           api.getUserStats()
         ]);
+        
+        clearTimeout(timeoutId);
         
         // Check for errors in responses
         if (gamesRes.error) {
@@ -1134,6 +1197,7 @@ export default function GamenightApp() {
         setGames(gamesRes.games || []);
         setChallenge(challengeRes.challenge);
         setUserStats(statsRes.stats || { points: 0, streak: 0, accuracy: 0 });
+        setLastUpdated(new Date()); // Track when data was loaded
         
         // Load user's prediction for this challenge
         if (challengeRes.challenge?.id) {
@@ -1142,7 +1206,7 @@ export default function GamenightApp() {
           setSelectedPrediction(prediction); // Show their pick as selected
         }
       } catch (err) {
-        console.error('Failed to load data:', err);
+        logError(err, { action: 'loadData', sport: activeSport });
         setLoadError(err.message || 'Failed to load data');
       }
       setLoading(false);
@@ -1240,6 +1304,13 @@ export default function GamenightApp() {
         transition: reducedMotion ? 'none' : 'opacity 300ms ease',
       }}
     >
+      {/* Offline Banner */}
+      {isOffline && (
+        <div className="bg-yellow-500/90 text-black text-center py-2 px-4 text-sm font-medium sticky top-0 z-[100]">
+          📡 You're offline - showing cached data
+        </div>
+      )}
+      
       {/* Header */}
       <header className="bg-[#0a0a0f]/90 backdrop-blur-xl p-4 border-b border-white/5 sticky top-0 z-50">
         <div className="flex justify-between items-center max-w-md mx-auto">
@@ -1277,7 +1348,26 @@ export default function GamenightApp() {
         {loading && (
           <div className="flex flex-col items-center justify-center py-20">
             <div className="text-orange-500 mb-4"><Icons.Loader /></div>
-            <p className="text-gray-400">Loading live games...</p>
+            <p className="text-gray-400 mb-4">Loading live games...</p>
+            {loadingTimeout && (
+              <div className="text-center">
+                <p className="text-yellow-400 text-sm mb-3">Taking longer than expected...</p>
+                <button
+                  onClick={() => {
+                    setLoading(true);
+                    setLoadingTimeout(false);
+                    setLoadError(null);
+                    // Force re-trigger by toggling sport
+                    const currentSport = activeSport;
+                    setActiveSport(currentSport === 'nba' ? 'nfl' : 'nba');
+                    setTimeout(() => setActiveSport(currentSport), 100);
+                  }}
+                  className="px-5 py-2 bg-white/10 hover:bg-white/15 rounded-full text-sm font-medium transition-colors"
+                >
+                  Try Again
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -1446,10 +1536,33 @@ export default function GamenightApp() {
               <div className="text-center py-16">
                 <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-5 text-gray-500"><Icons.Calendar /></div>
                 <div className="text-lg font-bold mb-2">No {activeSport.toUpperCase()} Games Today</div>
-                <div className="text-sm text-gray-400 mb-2">Check back tomorrow or switch sports.</div>
+                <div className="text-sm text-gray-400 mb-4">Check back tomorrow or switch sports.</div>
+                
+                {/* Retry Button */}
+                <button
+                  onClick={() => {
+                    setLoading(true);
+                    setLoadError(null);
+                    // Trigger reload
+                    api.getGames(activeSport).then(res => {
+                      if (!res.error) setGames(res.games || []);
+                      else setLoadError(res.error);
+                      setLoading(false);
+                    }).catch(err => {
+                      setLoadError(err.message);
+                      setLoading(false);
+                    });
+                  }}
+                  className="px-5 py-2 bg-white/10 hover:bg-white/15 rounded-full text-sm font-medium transition-colors mb-4"
+                >
+                  Refresh
+                </button>
+                
                 {loadError && (
-                  <div className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2 mt-4 max-w-xs mx-auto">
-                    Debug: {loadError}
+                  <div className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2 mt-2 max-w-xs mx-auto">
+                    {loadError.includes('fetch') || loadError.includes('network') 
+                      ? '📡 Network error - check your connection' 
+                      : `⚠️ ${loadError}`}
                   </div>
                 )}
               </div>
