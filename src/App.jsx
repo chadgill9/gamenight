@@ -196,7 +196,6 @@ const api = {
     if (games.length === 0) {
       return { pick: null, message: 'No games today' };
     }
-    }
     const bestGame = games[0];
     return {
       pick: {
@@ -240,15 +239,30 @@ const api = {
           const scheduleData = await scheduleRes.json();
           const events = scheduleData.events || [];
           // Filter completed games and get last 5
+          const now = new Date();
           const completedGames = events
-            .filter(e => e.competitions?.[0]?.status?.type?.completed)
+            .filter(e => {
+              const status = e.competitions?.[0]?.status;
+              // Check if game is completed via status.type.completed OR status.type.name === 'STATUS_FINAL'
+              const isCompleted = status?.type?.completed || 
+                                  status?.type?.name === 'STATUS_FINAL' ||
+                                  status?.type?.state === 'post';
+              // Also check if date is in the past
+              const gameDate = new Date(e.date);
+              const isPast = gameDate < now;
+              return isCompleted || isPast;
+            })
             .slice(-5)
             .reverse()
             .map(e => {
               const comp = e.competitions[0];
               const homeTeam = comp.competitors?.find(c => c.homeAway === 'home');
               const awayTeam = comp.competitors?.find(c => c.homeAway === 'away');
-              const isHome = homeTeam?.team?.abbreviation === teamId || homeTeam?.team?.id === teamId;
+              // Check if we're the home team by ID or abbreviation
+              const teamIdStr = String(teamId).toUpperCase();
+              const isHome = homeTeam?.team?.abbreviation === teamIdStr || 
+                            String(homeTeam?.team?.id) === teamIdStr ||
+                            homeTeam?.team?.abbreviation === teamId;
               const opponent = isHome ? awayTeam : homeTeam;
               const us = isHome ? homeTeam : awayTeam;
               const won = us?.winner;
