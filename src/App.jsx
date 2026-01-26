@@ -580,7 +580,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
       // Fallback - show single player only
       matchupType = 'featured';
       const singleStar = homeQB || awayQB || homeDefense[0] || awayDefense[0];
-      matchupText = `Features ${singleStar}`;
+      matchupText = `${singleStar}`;
       matchupLabel = 'Featured Player';
       displayedStars = [singleStar];
     }
@@ -598,7 +598,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     score = 13;
     matchupType = 'featured';
     const qbName = awayQB || homeQB;
-    matchupText = `Features ${qbName}`;
+    matchupText = `${qbName}`;
     matchupLabel = 'Featured QB';
     displayedStars = [qbName];
   }
@@ -607,7 +607,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     score = 8;
     matchupType = 'featured';
     const singleStar = awayStars[0] || homeStars[0];
-    matchupText = `Features ${singleStar}`;
+    matchupText = `${singleStar}`;
     matchupLabel = 'Featured Player';
     displayedStars = [singleStar];
   }
@@ -694,7 +694,7 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
     
     score = isAce ? 15 : 12;
     matchupType = 'featured';
-    matchupText = `${isAce ? 'Ace' : 'Starting'}: ${pitcher}`;
+    matchupText = pitcher; // Just the name, label provides context
     matchupLabel = 'Starting Pitcher';
     displayedStars = [pitcher];
     
@@ -754,7 +754,7 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
     
     score = isMVP ? 10 : 8;
     matchupType = 'featured';
-    matchupText = `Features ${singleBatter}`;
+    matchupText = `${singleBatter}`;
     matchupLabel = 'Featured Batter';
     displayedStars = [singleBatter];
   }
@@ -807,7 +807,7 @@ const buildMatchupResult = (homeTeam, awayTeam, homeStarList, awayStarList, scor
     matchupType = 'featured';
     const singleStar = bestAwayStar || bestHomeStar;
     matchupLabel = 'Featured Player';
-    matchupText = `Features ${singleStar}`;
+    matchupText = `${singleStar}`;
     allStars = [singleStar];
   } else {
     matchupType = 'none';
