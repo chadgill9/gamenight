@@ -102,6 +102,14 @@ const getDeviceId = () => {
 // ============================================
 // ESPN Data Transformer
 // ============================================
+
+// Check if game status indicates it's finished
+const isGameFinal = (status) => {
+  if (!status) return false;
+  const s = status.toUpperCase();
+  return s.includes('FINAL') || s.includes('POST') || s.includes('END') || s.includes('COMPLETE');
+};
+
 const transformESPNGame = (event, sport) => {
   const competition = event.competitions?.[0];
   if (!competition) return null;
@@ -1538,8 +1546,12 @@ export default function GamenightApp() {
                         <div className="text-3xl font-extrabold mb-1">
                           {bestGame.awayScore} - {bestGame.homeScore}
                         </div>
-                        <span className={`text-sm px-3 py-1 rounded-full ${bestGame.status === 'STATUS_FINAL' ? 'bg-gray-500/20 text-gray-400' : 'bg-red-500/20 text-red-400'}`}>
-                          {bestGame.status === 'STATUS_FINAL' ? 'Final' : 'Live'}
+                        <span className={`text-sm px-3 py-1 rounded-full ${
+                          isGameFinal(bestGame.status) 
+                            ? 'bg-gray-500/20 text-gray-400' 
+                            : 'bg-red-500/20 text-red-400'
+                        }`}>
+                          {isGameFinal(bestGame.status) ? 'Final' : 'Live'}
                         </span>
                       </div>
                     )}
