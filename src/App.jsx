@@ -541,16 +541,190 @@ const getTodayDateET = () => {
   return `${year}-${month}-${day}`;
 };
 
-// Validate that a game date matches today (in ET)
-// Returns { isToday, gameDate, todayDate } for debugging
-const validateGameDate = (gameDate) => {
-  if (!gameDate) return { isToday: false, gameDate: null, todayDate: getTodayDateET(), reason: 'NO_DATE' };
+// ============================================
+// DATE CLASSIFICATION (NOT FILTERING)
+// ============================================
+// CRITICAL: Games must be CLASSIFIED, not FILTERED
+// A game's eligibility is determined by its ET date, not UTC date
+// 
+// Classifications:
+// - TODAY_ET: Game starts today in Eastern Time (eligible for Today's Pick)
+// - LATE_NIGHT_ET: Game starts after midnight UTC but same ET day (eligible)
+// - TOMORROW_ET: Game starts tomorrow in ET (not eligible for today's pick)
+// - YESTERDAY_ET: Game started yesterday in ET (likely finished)
+// - INVALID_DATE: No valid date provided
+
+const DATE_CLASSIFICATIONS = {
+  TODAY_ET: 'TODAY_ET',
+  LATE_NIGHT_ET: 'LATE_NIGHT_ET', // After midnight UTC, same ET day
+  TOMORROW_ET: 'TOMORROW_ET',
+  YESTERDAY_ET: 'YESTERDAY_ET',
+  INVALID_DATE: 'INVALID_DATE'
+};
+
+// Convert a UTC timestamp to Eastern Time date string (YYYY-MM-DD)
+const convertUTCToET = (utcTimestamp) => {
+  if (!utcTimestamp) return null;
+  try {
+    const date = new Date(utcTimestamp);
+    if (isNaN(date.getTime())) return null;
+    
+    // Convert to Eastern Time
+    const etDateStr = date.toLocaleString('en-US', { 
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+    
+    // Parse MM/DD/YYYY to YYYY-MM-DD
+    const [month, day, year] = etDateStr.split('/');
+    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  } catch (e) {
+    console.warn('[Gamenight] Failed to convert UTC to ET:', utcTimestamp, e);
+    return null;
+  }
+};
+
+// Get full ET datetime info for a UTC timestamp
+const getETDateTimeInfo = (utcTimestamp) => {
+  if (!utcTimestamp) return null;
+  try {
+    const date = new Date(utcTimestamp);
+    if (isNaN(date.getTime())) return null;
+    
+    // Get ET components
+    const etParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).formatToParts(date);
+    
+    const getPart = (type) => etParts.find(p => p.type === type)?.value;
+    
+    return {
+      year: getPart('year'),
+      month: getPart('month'),
+      day: getPart('day'),
+      hour: parseInt(getPart('hour')),
+      minute: parseInt(getPart('minute')),
+      dateString: `${getPart('year')}-${getPart('month')}-${getPart('day')}`
+    };
+  } catch (e) {
+    return null;
+  }
+};
+
+// Classify a game's date relative to today (in ET)
+// This CLASSIFIES games, it does NOT filter them
+const classifyGameDate = (startTimeUTC) => {
+  const todayET = getTodayDateET();
+  
+  // No date provided
+  if (!startTimeUTC) {
+    return {
+      classification: DATE_CLASSIFICATIONS.INVALID_DATE,
+      gameDateET: null,
+      gameDateUTC: null,
+      todayET,
+      eligibleForTodayPick: false,
+      reason: 'NO_DATE_PROVIDED'
+    };
+  }
+  
+  // Convert UTC start time to ET date
+  const gameDateET = convertUTCToET(startTimeUTC);
+  const gameDateUTC = startTimeUTC.split('T')[0]; // For logging only
+  
+  if (!gameDateET) {
+    return {
+      classification: DATE_CLASSIFICATIONS.INVALID_DATE,
+      gameDateET: null,
+      gameDateUTC,
+      todayET,
+      eligibleForTodayPick: false,
+      reason: 'INVALID_DATE_FORMAT'
+    };
+  }
+  
+  // Parse dates for comparison
+  const today = new Date(todayET + 'T12:00:00'); // Noon to avoid DST issues
+  const gameDay = new Date(gameDateET + 'T12:00:00');
+  const diffDays = Math.round((gameDay - today) / (1000 * 60 * 60 * 24));
+  
+  // Get ET time info for late-night detection
+  const etInfo = getETDateTimeInfo(startTimeUTC);
+  
+  let classification;
+  let eligibleForTodayPick;
+  let reason;
+  
+  if (diffDays === 0) {
+    // Same day in ET
+    classification = DATE_CLASSIFICATIONS.TODAY_ET;
+    eligibleForTodayPick = true;
+    reason = 'SAME_DAY_ET';
+  } else if (diffDays === -1) {
+    // Yesterday in ET (might be a late game still showing, or finished)
+    classification = DATE_CLASSIFICATIONS.YESTERDAY_ET;
+    eligibleForTodayPick = false;
+    reason = 'YESTERDAY_ET';
+  } else if (diffDays === 1) {
+    // Tomorrow in ET - but check if it's actually late tonight in UTC
+    // A game at 11:30 PM ET would be UTC next day but still "today"
+    // This shouldn't happen if we convert properly, but handle edge case
+    classification = DATE_CLASSIFICATIONS.TOMORROW_ET;
+    eligibleForTodayPick = false;
+    reason = 'TOMORROW_ET';
+  } else if (diffDays > 1) {
+    classification = DATE_CLASSIFICATIONS.TOMORROW_ET;
+    eligibleForTodayPick = false;
+    reason = 'FUTURE_GAME';
+  } else {
+    classification = DATE_CLASSIFICATIONS.YESTERDAY_ET;
+    eligibleForTodayPick = false;
+    reason = 'PAST_GAME';
+  }
+  
+  return {
+    classification,
+    gameDateET,
+    gameDateUTC,
+    todayET,
+    eligibleForTodayPick,
+    reason,
+    etHour: etInfo?.hour,
+    etMinute: etInfo?.minute
+  };
+};
+
+// LEGACY WRAPPER: For backward compatibility with existing code
+// Returns { isToday } for code that expects the old format
+const validateGameDate = (gameDate, startTimeUTC = null) => {
+  // If we have startTimeUTC, use proper classification
+  if (startTimeUTC) {
+    const classification = classifyGameDate(startTimeUTC);
+    return {
+      isToday: classification.eligibleForTodayPick,
+      gameDate: classification.gameDateET,
+      todayDate: classification.todayET,
+      reason: classification.reason,
+      classification: classification.classification
+    };
+  }
+  
+  // Fallback for code that only passes gameDate (deprecated)
+  // This is the OLD buggy logic - only kept for transition
   const todayDate = getTodayDateET();
   return {
     isToday: gameDate === todayDate,
     gameDate,
     todayDate,
-    reason: gameDate === todayDate ? 'VALID' : 'DATE_MISMATCH'
+    reason: gameDate === todayDate ? 'VALID' : 'DATE_MISMATCH_LEGACY'
   };
 };
 
@@ -2162,10 +2336,16 @@ const transformESPNGame = (event, sport) => {
     { homePitcher, awayPitcher } // MLB-specific data
   );
 
+  // Classify game date using proper UTC → ET conversion
+  const dateClassification = classifyGameDate(event.date);
+
   return {
     id: event.id,
-    gameDate: event.date?.split('T')[0],
+    gameDate: dateClassification.gameDateET || event.date?.split('T')[0], // Use ET date
+    gameDateUTC: event.date?.split('T')[0], // Keep UTC date for reference
     startTime: event.date,
+    startTimeUTC: event.date, // Explicit UTC reference
+    dateClassification, // Full classification info
     network,
     status: competition.status?.type?.name || 'scheduled',
     homeScore: homeTeam.score ? parseInt(homeTeam.score) : null,
@@ -2389,7 +2569,7 @@ const sortRosterBySport = (roster, sport, depthChartData = null) => {
 // ============================================
 const api = {
   // Fetch live games via Supabase proxy (avoids CORS)
-  // P0 FIX: Now validates all games are from today's date (ET)
+  // CLASSIFICATION-BASED: Games are classified, NOT filtered
   async getGamesFromESPN(sport = 'nba') {
     const fetchTimestamp = new Date().toISOString();
     const todayET = getTodayDateET();
@@ -2406,23 +2586,51 @@ const api = {
         return { games: [], error: data.error, dataFreshness: { fetchTimestamp, todayET, status: 'ERROR' } };
       }
       
-      // Transform all events first
+      // Transform all events - each game now has dateClassification
       const allGames = (data.events || [])
         .map(e => transformESPNGame(e, sport))
         .filter(Boolean);
       
-      // P0 FIX: Filter to only today's games (stale data prevention)
-      const todaysGames = allGames.filter(game => {
-        const validation = validateGameDate(game.gameDate);
-        if (!validation.isToday) {
-          // Log filtered games for observability (not an error, just info)
-          console.log(`[Gamenight] Filtered out non-today game: ${game.homeTeam?.name} vs ${game.awayTeam?.name} (${game.gameDate} != ${todayET})`);
+      // CLASSIFICATION-BASED: DO NOT FILTER GAMES
+      // Instead, classify and log each game's eligibility
+      let todayCount = 0;
+      let tomorrowCount = 0;
+      let yesterdayCount = 0;
+      let invalidCount = 0;
+      
+      allGames.forEach(game => {
+        const c = game.dateClassification;
+        if (c) {
+          console.log(`[Gamenight] Game classified:`, {
+            gameId: game.id,
+            teams: `${game.awayTeam?.abbreviation} @ ${game.homeTeam?.abbreviation}`,
+            utcDate: c.gameDateUTC,
+            etDate: c.gameDateET,
+            classification: c.classification,
+            eligibleForPick: c.eligibleForTodayPick,
+            reason: c.reason
+          });
+          
+          if (c.classification === DATE_CLASSIFICATIONS.TODAY_ET || c.classification === DATE_CLASSIFICATIONS.LATE_NIGHT_ET) {
+            todayCount++;
+          } else if (c.classification === DATE_CLASSIFICATIONS.TOMORROW_ET) {
+            tomorrowCount++;
+          } else if (c.classification === DATE_CLASSIFICATIONS.YESTERDAY_ET) {
+            yesterdayCount++;
+          } else {
+            invalidCount++;
+          }
         }
-        return validation.isToday;
       });
       
-      // P0 FIX: Use centralized ranking function (no mutation, stable sort)
-      const games = rankGamesByWatchability(todaysGames);
+      // Separate games by eligibility for pick
+      const gamesEligibleForPick = allGames.filter(g => g.dateClassification?.eligibleForTodayPick);
+      const gamesNotEligible = allGames.filter(g => !g.dateClassification?.eligibleForTodayPick);
+      
+      // SLATE RENDERING GUARANTEE: If ESPN returns games, we show them
+      // ALL games go in the slate, ranked by watchability
+      // But only eligible games can be selected as Today's Pick
+      const games = rankGamesByWatchability(allGames);
       
       // Build data freshness metadata
       const dataFreshness = {
@@ -2431,16 +2639,25 @@ const api = {
         status: 'OK',
         totalEventsReceived: data.events?.length || 0,
         gamesAfterTransform: allGames.length,
-        todaysGamesCount: todaysGames.length,
-        filteredOutCount: allGames.length - todaysGames.length
+        // Classification counts (for debugging)
+        classification: {
+          todayET: todayCount,
+          tomorrowET: tomorrowCount,
+          yesterdayET: yesterdayCount,
+          invalid: invalidCount,
+          eligibleForPick: gamesEligibleForPick.length,
+          notEligible: gamesNotEligible.length
+        }
       };
       
-      // Log if games were filtered (important for debugging stale data issues)
-      if (dataFreshness.filteredOutCount > 0) {
-        console.warn(`[Gamenight] Filtered ${dataFreshness.filteredOutCount} non-today games for ${sport}`);
-      }
+      // Log classification summary
+      console.log(`[Gamenight] Classification summary for ${sport}:`, dataFreshness.classification);
       
-      return { games, dataFreshness };
+      return { 
+        games, 
+        gamesEligibleForPick, // Games that can be selected as Today's Pick
+        dataFreshness 
+      };
     } catch (err) {
       console.error('ESPN fetch failed:', err);
       logError(err, { sport, endpoint: 'scoreboard', context: 'getGamesFromESPN' });
@@ -2450,10 +2667,12 @@ const api = {
 
   // Get tonight's pick (uses Pick State Machine)
   async getPicksToday(sport = 'nba') {
-    const { games, error, dataFreshness } = await this.getGamesFromESPN(sport);
+    const { games, gamesEligibleForPick, error, dataFreshness } = await this.getGamesFromESPN(sport);
     if (error) {
       return { pick: null, message: error, dataFreshness };
     }
+    
+    // SLATE RENDERING GUARANTEE: If ESPN returned games, we have games
     if (games.length === 0) {
       const message = dataFreshness?.status === 'OK' 
         ? `No ${sport.toUpperCase()} games today`
@@ -2461,13 +2680,13 @@ const api = {
       return { pick: null, message, confidenceTier: calculateConfidenceTier([]), dataFreshness };
     }
     
-    // Get watchable games for confidence calculation
-    const watchableGames = games.filter(g => isGameWatchable(g.status));
-    const confidenceTier = calculateConfidenceTier(watchableGames, dataFreshness);
+    // Get watchable AND eligible games for pick selection
+    const watchableEligible = (gamesEligibleForPick || games).filter(g => isGameWatchable(g.status));
+    const confidenceTier = calculateConfidenceTier(watchableEligible, dataFreshness);
     
-    // Load existing pick state and evaluate
+    // Load existing pick state and evaluate using ELIGIBLE games
     const existingPickState = loadPickState(sport);
-    const evaluation = evaluatePick(existingPickState, games, confidenceTier, sport);
+    const evaluation = evaluatePick(existingPickState, gamesEligibleForPick || games, confidenceTier, sport);
     
     if (!evaluation.pick) {
       return { 
@@ -2502,7 +2721,7 @@ const api = {
 
   // P0 FIX: Single fetch that returns both games and pick (with Pick State Machine)
   async getGamesAndPick(sport = 'nba') {
-    const { games, error, dataFreshness } = await this.getGamesFromESPN(sport);
+    const { games, gamesEligibleForPick, error, dataFreshness } = await this.getGamesFromESPN(sport);
     
     if (error) {
       return { 
@@ -2515,6 +2734,8 @@ const api = {
       };
     }
     
+    // SLATE RENDERING GUARANTEE: If ESPN returned games, show them
+    // "No games today" ONLY when ESPN truly returns zero games
     if (games.length === 0) {
       const message = dataFreshness?.status === 'OK' 
         ? `No ${sport.toUpperCase()} games today`
@@ -2529,20 +2750,21 @@ const api = {
       };
     }
     
-    // Get watchable games for confidence calculation
-    const watchableGames = games.filter(g => isGameWatchable(g.status));
-    const confidenceTier = calculateConfidenceTier(watchableGames, dataFreshness);
+    // Get watchable AND eligible games for pick selection
+    const eligibleGames = gamesEligibleForPick || games;
+    const watchableEligible = eligibleGames.filter(g => isGameWatchable(g.status));
+    const confidenceTier = calculateConfidenceTier(watchableEligible, dataFreshness);
     
     // Load existing pick state
     const existingPickState = loadPickState(sport);
     
-    // Use Pick State Machine to evaluate/select pick
-    const evaluation = evaluatePick(existingPickState, games, confidenceTier, sport);
+    // Use Pick State Machine to evaluate/select pick from ELIGIBLE games
+    const evaluation = evaluatePick(existingPickState, eligibleGames, confidenceTier, sport);
     
-    // No watchable games left
+    // No watchable eligible games left
     if (!evaluation.pick) {
       return {
-        games,
+        games, // Still return ALL games for slate display
         pick: null,
         pickState: null,
         message: evaluation.message || `All ${sport.toUpperCase()} games have finished`,
@@ -2551,13 +2773,13 @@ const api = {
       };
     }
     
-    // Get alternate games (next 2-3 best watchable games, excluding pick)
-    const alternateGames = watchableGames
+    // Get alternate games (next 2-3 best watchable eligible games, excluding pick)
+    const alternateGames = watchableEligible
       .filter(g => g.id !== evaluation.pick.id)
       .slice(0, 3);
     
     return {
-      games, // Return ALL games for display (including finished)
+      games, // Return ALL games for slate display (including finished, tomorrow's games shown but marked)
       pick: {
         id: evaluation.pick.id,
         date: evaluation.pick.gameDate,
