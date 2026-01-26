@@ -1525,7 +1525,10 @@ export default function GamenightApp() {
                       <span className="w-2 h-2 bg-orange-500 rounded-full animate-pulse" />
                       Tonight's Pick
                     </span>
-                    <span className="text-xs font-semibold text-gray-400 px-3 py-1.5 bg-white/5 rounded-xl">{activeSport.toUpperCase()}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg font-extrabold text-orange-400">{bestGame.score}</span>
+                      <span className="text-xs font-semibold text-gray-400 px-3 py-1.5 bg-white/5 rounded-xl">{activeSport.toUpperCase()}</span>
+                    </div>
                   </div>
 
                   <div className="space-y-2 mb-5">
