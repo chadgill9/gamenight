@@ -455,12 +455,13 @@ const MLB_ACE_PITCHERS = [
 // ============================================
 // CRITICAL: Must NEVER produce same-team "vs" matchups in ANY sport
 
-const calculateStarPowerScore = (homeTeam, awayTeam, sport = 'nba') => {
+const calculateStarPowerScore = (homeTeam, awayTeam, sport = 'nba', sportData = {}) => {
   // Route to sport-specific calculator
   if (sport === 'nfl') {
     return calculateNFLKeyPlayers(homeTeam, awayTeam);
   } else if (sport === 'mlb') {
-    return calculateMLBKeyPlayers(homeTeam, awayTeam);
+    // Pass pitcher data for MLB
+    return calculateMLBKeyPlayers(homeTeam, awayTeam, sportData.homePitcher, sportData.awayPitcher);
   }
   return calculateNBAStarPower(homeTeam, awayTeam);
 };
@@ -564,17 +565,19 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
   // CASE 2: One team has QB, other has defensive star (TWO players, DIFFERENT teams)
   else if ((homeQB && awayDefense.length > 0) || (awayQB && homeDefense.length > 0)) {
     score = 15;
-    matchupType = 'vs';
+    // Only set 'vs' AFTER validating different teams
     if (homeQB && awayDefense.length > 0 && homeAbbr !== awayAbbr) {
+      matchupType = 'vs';
       matchupText = `${awayDefense[0]} vs ${homeQB}`;
       matchupLabel = 'Key Matchup';
       displayedStars = [awayDefense[0], homeQB];
     } else if (awayQB && homeDefense.length > 0 && homeAbbr !== awayAbbr) {
+      matchupType = 'vs';
       matchupText = `${awayQB} vs ${homeDefense[0]}`;
       matchupLabel = 'Key Matchup';
       displayedStars = [awayQB, homeDefense[0]];
     } else {
-      // Fallback if somehow same team (shouldn't happen)
+      // Fallback - show single player only
       matchupType = 'featured';
       const singleStar = homeQB || awayQB || homeDefense[0] || awayDefense[0];
       matchupText = `Features ${singleStar}`;
@@ -587,7 +590,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     score = 12;
     matchupType = 'vs';
     matchupText = `${awayStars[0]} vs ${homeStars[0]}`;
-    matchupLabel = 'Key Players';
+    matchupLabel = 'Key Matchup'; // Not "QB Matchup" - reserved for QB vs QB only
     displayedStars = [awayStars[0], homeStars[0]];
   }
   // CASE 4: Only one team has star QB (ONE player only)
@@ -632,21 +635,19 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
 // ============================================
 // MLB Key Players Calculator
 // ============================================
+// PRIORITY ORDER (per requirements):
+//   1. Starting Pitcher vs Starting Pitcher (if both confirmed)
+//   2. Featured Starting Pitcher (if only one confirmed)
+//   3. Top Batters vs Top Batters (FALLBACK ONLY - when no pitcher data)
+//   4. MVP status is tie-breaker for scoring, NEVER primary selector
+//
 // RULE: Always show either:
-//   1. Two players from DIFFERENT teams ("Player A vs Player B")
-//   2. ONE player only ("Features Player A")
-// NEVER show two players from the same team
-const calculateMLBKeyPlayers = (homeTeam, awayTeam) => {
+//   - Two players from DIFFERENT teams ("Player A vs Player B")
+//   - ONE player only ("Features Player A")
+//   - NEVER show two players from the same team
+const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitcher = null) => {
   const homeAbbr = homeTeam.abbreviation;
   const awayAbbr = awayTeam.abbreviation;
-  
-  // Get team position players (batters)
-  const homeStars = STAR_PLAYERS.TEAM_STARS[homeAbbr] || [];
-  const awayStars = STAR_PLAYERS.TEAM_STARS[awayAbbr] || [];
-  
-  // For MLB, we check if any stars are pitchers (Ohtani is special case - he's both)
-  const homeBatters = homeStars.filter(p => !MLB_ACE_PITCHERS.includes(p) || p === 'Shohei Ohtani');
-  const awayBatters = awayStars.filter(p => !MLB_ACE_PITCHERS.includes(p) || p === 'Shohei Ohtani');
   
   let score = 5;
   let matchupType = 'none';
@@ -654,37 +655,110 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam) => {
   let matchupLabel = '';
   let displayedStars = [];
   
-  // Get MVP tier for scoring
-  const { mvp } = getStarTiers('mlb');
-  const homeMVPs = homeStars.filter(p => mvp.includes(p));
-  const awayMVPs = awayStars.filter(p => mvp.includes(p));
+  // ===== PRIORITY 1: Starting Pitcher vs Starting Pitcher =====
+  // This is the PRIMARY MLB matchup - pitching drives watchability
+  if (homePitcher && awayPitcher && homeAbbr !== awayAbbr) {
+    // Check if either pitcher is an ace for scoring bonus
+    const isHomeAce = MLB_ACE_PITCHERS.includes(homePitcher);
+    const isAwayAce = MLB_ACE_PITCHERS.includes(awayPitcher);
+    
+    if (isHomeAce && isAwayAce) {
+      score = 20; // Ace vs Ace is premium
+    } else if (isHomeAce || isAwayAce) {
+      score = 17; // One ace
+    } else {
+      score = 14; // Two confirmed starters, neither ace
+    }
+    
+    matchupType = 'vs';
+    matchupText = `${awayPitcher} vs ${homePitcher}`;
+    matchupLabel = 'Starting Pitchers';
+    displayedStars = [awayPitcher, homePitcher];
+    
+    return {
+      score,
+      stars: displayedStars,
+      homeStars: [homePitcher],
+      awayStars: [awayPitcher],
+      matchupType,
+      matchupText,
+      matchupLabel,
+      reason: matchupText
+    };
+  }
   
-  // CASE 1: Both teams have MVP-caliber batters (TWO players, DIFFERENT teams)
-  if (homeMVPs.length > 0 && awayMVPs.length > 0 && homeAbbr !== awayAbbr) {
-    score = 20;
-    matchupType = 'vs';
-    matchupText = `${awayMVPs[0]} vs ${homeMVPs[0]}`;
-    matchupLabel = 'Star Matchup';
-    displayedStars = [awayMVPs[0], homeMVPs[0]];
-  }
-  // CASE 2: Both teams have All-Star caliber batters (TWO players, DIFFERENT teams)
-  else if (homeBatters.length > 0 && awayBatters.length > 0 && homeAbbr !== awayAbbr) {
-    score = 15;
-    matchupType = 'vs';
-    matchupText = `${awayBatters[0]} vs ${homeBatters[0]}`;
-    matchupLabel = 'Star Matchup';
-    displayedStars = [awayBatters[0], homeBatters[0]];
-  }
-  // CASE 3: One team has star batters (ONE player only)
-  else if (homeBatters.length > 0 || awayBatters.length > 0) {
-    score = 10;
+  // ===== PRIORITY 2: Featured Starting Pitcher (one confirmed) =====
+  if (homePitcher || awayPitcher) {
+    const pitcher = awayPitcher || homePitcher;
+    const isAce = MLB_ACE_PITCHERS.includes(pitcher);
+    
+    score = isAce ? 15 : 12;
     matchupType = 'featured';
-    const singleStar = awayBatters[0] || homeBatters[0];
-    matchupText = `Features ${singleStar}`;
-    matchupLabel = 'Featured Player';
-    displayedStars = [singleStar];
+    matchupText = `${isAce ? 'Ace' : 'Starting'}: ${pitcher}`;
+    matchupLabel = 'Starting Pitcher';
+    displayedStars = [pitcher];
+    
+    return {
+      score,
+      stars: displayedStars,
+      homeStars: homePitcher ? [homePitcher] : [],
+      awayStars: awayPitcher ? [awayPitcher] : [],
+      matchupType,
+      matchupText,
+      matchupLabel,
+      reason: matchupText
+    };
   }
-  // CASE 4: No notable batters
+  
+  // ===== PRIORITY 3: FALLBACK - Top Batters (no pitcher data available) =====
+  // Only used when starting pitcher data is not available
+  // MVP tier is used for SCORING BOOST only, not primary selection
+  
+  const homeStars = STAR_PLAYERS.TEAM_STARS[homeAbbr] || [];
+  const awayStars = STAR_PLAYERS.TEAM_STARS[awayAbbr] || [];
+  
+  // Filter to batters only (exclude pitchers from batter list, except Ohtani who hits too)
+  const homeBatters = homeStars.filter(p => !MLB_ACE_PITCHERS.includes(p) || p === 'Shohei Ohtani');
+  const awayBatters = awayStars.filter(p => !MLB_ACE_PITCHERS.includes(p) || p === 'Shohei Ohtani');
+  
+  // Get MVP tier for SCORING BONUS only (not selection priority)
+  const { mvp } = getStarTiers('mlb');
+  
+  // CASE 3a: Both teams have star batters (TWO players, DIFFERENT teams)
+  if (homeBatters.length > 0 && awayBatters.length > 0 && homeAbbr !== awayAbbr) {
+    // Select top batter from each team (first in list)
+    const homeBatter = homeBatters[0];
+    const awayBatter = awayBatters[0];
+    
+    // MVP status adds scoring bonus (tie-breaker), doesn't change selection
+    const homeIsMVP = mvp.includes(homeBatter);
+    const awayIsMVP = mvp.includes(awayBatter);
+    
+    if (homeIsMVP && awayIsMVP) {
+      score = 15; // Both MVPs - highest batter matchup score
+    } else if (homeIsMVP || awayIsMVP) {
+      score = 12; // One MVP
+    } else {
+      score = 10; // Star batters, no MVPs
+    }
+    
+    matchupType = 'vs';
+    matchupText = `${awayBatter} vs ${homeBatter}`;
+    matchupLabel = 'Star Batters'; // Clearly indicate this is batters, not pitchers
+    displayedStars = [awayBatter, homeBatter];
+  }
+  // CASE 3b: One team has star batters (ONE player only)
+  else if (homeBatters.length > 0 || awayBatters.length > 0) {
+    const singleBatter = awayBatters[0] || homeBatters[0];
+    const isMVP = mvp.includes(singleBatter);
+    
+    score = isMVP ? 10 : 8;
+    matchupType = 'featured';
+    matchupText = `Features ${singleBatter}`;
+    matchupLabel = 'Featured Batter';
+    displayedStars = [singleBatter];
+  }
+  // CASE 3c: No notable batters
   else {
     score = 5;
     matchupType = 'none';
@@ -701,7 +775,7 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam) => {
     matchupType,
     matchupText,
     matchupLabel,
-    reason: matchupText || 'No standout players'
+    reason: matchupText || 'No pitcher data available'
   };
 };
 
@@ -864,13 +938,13 @@ const calculateAccessibilityScore = (network, startTime) => {
 // MAIN WATCHABILITY CALCULATOR
 // ============================================
 
-const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline, sport = 'nba') => {
+const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline, sport = 'nba', sportData = {}) => {
   // Validate data
   const validation = validateGameData(homeTeam, awayTeam, startTime);
   
-  // Calculate component scores (pass sport to relevant functions)
+  // Calculate component scores (pass sport and sport-specific data to relevant functions)
   const stakes = calculateStakesScore(homeTeam, awayTeam, validation, sport);
-  const starPower = calculateStarPowerScore(homeTeam, awayTeam, sport);
+  const starPower = calculateStarPowerScore(homeTeam, awayTeam, sport, sportData);
   const competitiveness = calculateCompetitivenessScore(homeTeam, awayTeam, validation);
   const narrative = calculateNarrativeScore(homeTeam, awayTeam, headline);
   const accessibility = calculateAccessibilityScore(network, startTime);
@@ -1051,6 +1125,32 @@ const transformESPNGame = (event, sport) => {
   const homeName = homeTeam.team?.displayName;
   const awayName = awayTeam.team?.displayName;
   
+  // Extract MLB probable pitchers (if available)
+  // ESPN provides this in competition.probables or competitor.probables
+  let homePitcher = null;
+  let awayPitcher = null;
+  
+  if (sport === 'mlb') {
+    // Try competition.probables first
+    const probables = competition.probables || [];
+    probables.forEach(probable => {
+      const athleteName = probable.athlete?.displayName || probable.athlete?.fullName;
+      if (probable.homeAway === 'home' && athleteName) {
+        homePitcher = athleteName;
+      } else if (probable.homeAway === 'away' && athleteName) {
+        awayPitcher = athleteName;
+      }
+    });
+    
+    // Also try competitor.probables as backup
+    if (!homePitcher && homeTeam.probables?.length > 0) {
+      homePitcher = homeTeam.probables[0]?.athlete?.displayName || homeTeam.probables[0]?.athlete?.fullName;
+    }
+    if (!awayPitcher && awayTeam.probables?.length > 0) {
+      awayPitcher = awayTeam.probables[0]?.athlete?.displayName || awayTeam.probables[0]?.athlete?.fullName;
+    }
+  }
+  
   // Build team objects for watchability calculation
   const homeTeamData = {
     name: homeName,
@@ -1067,13 +1167,15 @@ const transformESPNGame = (event, sport) => {
   };
   
   // Calculate watchability with new algorithm
+  // Pass pitcher data for MLB
   const watchability = calculateWatchability(
     homeTeamData,
     awayTeamData,
     network,
     event.date,
     headline,
-    sport
+    sport,
+    { homePitcher, awayPitcher } // MLB-specific data
   );
 
   return {
