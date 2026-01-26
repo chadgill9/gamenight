@@ -154,6 +154,64 @@ const validateGameDate = (gameDate) => {
 };
 
 // ============================================
+// DATA FRESHNESS VALIDATION (HARD FIX #2)
+// ============================================
+// CRITICAL: Data can be from today but still stale
+// E.g., fetched at 6am, now 7pm - lineups changed, injuries updated
+
+// Staleness thresholds (in minutes)
+const DATA_FRESHNESS_THRESHOLDS = {
+  SCHEDULED: 60,   // Games not started: 1 hour is acceptable
+  LIVE: 5,         // Games in progress: 5 minutes max
+  DEFAULT: 30      // Unknown status: 30 minutes
+};
+
+// Calculate data age in minutes from fetch timestamp
+const getDataAgeMinutes = (fetchTimestamp) => {
+  if (!fetchTimestamp) return Infinity; // No timestamp = infinitely stale
+  
+  try {
+    const fetchTime = new Date(fetchTimestamp).getTime();
+    const now = Date.now();
+    const ageMs = now - fetchTime;
+    return Math.round(ageMs / (1000 * 60)); // Convert to minutes
+  } catch (e) {
+    console.warn('[Gamenight] Invalid fetch timestamp:', fetchTimestamp);
+    return Infinity;
+  }
+};
+
+// Check if data freshness is acceptable for the game state
+// Returns { fresh: boolean, ageMinutes: number, threshold: number, status: string }
+const validateDataFreshness = (fetchTimestamp, gameStatus = 'scheduled') => {
+  const ageMinutes = getDataAgeMinutes(fetchTimestamp);
+  
+  // Determine threshold based on game status
+  let threshold;
+  if (!gameStatus || gameStatus.toUpperCase().includes('SCHEDULED')) {
+    threshold = DATA_FRESHNESS_THRESHOLDS.SCHEDULED;
+  } else if (gameStatus.toUpperCase().includes('FINAL') || gameStatus.toUpperCase().includes('POST')) {
+    threshold = DATA_FRESHNESS_THRESHOLDS.SCHEDULED; // Finished games don't need fresh data
+  } else {
+    // Assume live or in-progress
+    threshold = DATA_FRESHNESS_THRESHOLDS.LIVE;
+  }
+  
+  const fresh = ageMinutes <= threshold;
+  
+  if (!fresh) {
+    console.warn(`[Gamenight] Data is stale: ${ageMinutes} minutes old (threshold: ${threshold})`);
+  }
+  
+  return {
+    fresh,
+    ageMinutes,
+    threshold,
+    status: fresh ? 'FRESH' : 'STALE'
+  };
+};
+
+// ============================================
 // WATCHABILITY ALGORITHM v2
 // ============================================
 
@@ -163,6 +221,145 @@ const validateGameDate = (gameDate) => {
 // CRITICAL: Each sport has its own isolated player data
 // NEVER share or cross-reference between sports
 // All players must be ACTIVE for current season
+// NOTE: Static lists are best-effort as of last update. 
+//       Injury cache provides real-time filtering when available.
+
+// ============================================
+// INJURY CACHE (HARD FIX #1)
+// ============================================
+// This cache stores known player availability status.
+// Populated when team rosters are fetched.
+// Used to EXCLUDE players from matchup selection.
+
+// Status values that mean player is OUT and should be excluded
+const UNAVAILABLE_STATUSES = [
+  'Out', 'OUT', 
+  'Injured Reserve', 'IR',
+  'Doubtful', 'DOUBTFUL',
+  'Suspended', 'SUSPENDED',
+  'Not With Team', 'NWT',
+  'Physically Unable to Perform', 'PUP',
+  'Non-Football Injury', 'NFI',
+  'Day-To-Day', // Conservative: exclude day-to-day too
+];
+
+// Statuses that mean player is likely available
+const AVAILABLE_STATUSES = [
+  'Active', 'active', 'ACTIVE',
+  'Probable', 'PROBABLE',
+  'Healthy', 'HEALTHY',
+];
+
+// Global injury cache: { 'sport:teamAbbr:playerName': { status, updatedAt, onRoster } }
+const INJURY_CACHE = {};
+
+// HARD FIX #3: Track which team rosters we've verified
+// { 'sport:teamAbbr': { updatedAt, playerNames: Set } }
+const ROSTER_CACHE = {};
+
+// Update injury cache when roster data is fetched
+// HARD FIX #3: Also tracks roster membership
+const updateInjuryCache = (teamAbbr, sport, roster) => {
+  if (!teamAbbr || !sport || !Array.isArray(roster)) return;
+  
+  const now = Date.now();
+  const rosterKey = `${sport}:${teamAbbr}`;
+  const playerNames = new Set();
+  
+  roster.forEach(player => {
+    if (player.name) {
+      const key = `${sport}:${teamAbbr}:${player.name}`;
+      playerNames.add(player.name);
+      INJURY_CACHE[key] = {
+        status: player.status || 'Active',
+        injuryType: player.injuryType || null,
+        onRoster: true, // HARD FIX #3: Confirmed on roster
+        updatedAt: now
+      };
+    }
+  });
+  
+  // HARD FIX #3: Track that we've verified this team's roster
+  ROSTER_CACHE[rosterKey] = {
+    updatedAt: now,
+    playerNames,
+    playerCount: roster.length
+  };
+  
+  console.log(`[Gamenight] Roster cache updated for ${rosterKey}: ${roster.length} players`);
+};
+
+// Check if a player is available for matchup selection
+// HARD FIX #3: Also checks roster membership when roster data is available
+// Returns: { available: boolean, verified: boolean, status: string, onRoster: boolean }
+const isPlayerAvailableForMatchup = (playerName, teamAbbr, sport) => {
+  if (!playerName || !teamAbbr || !sport) {
+    return { available: false, verified: false, status: 'INVALID_INPUT', onRoster: false };
+  }
+  
+  const rosterKey = `${sport}:${teamAbbr}`;
+  const playerKey = `${sport}:${teamAbbr}:${playerName}`;
+  const cached = INJURY_CACHE[playerKey];
+  const rosterData = ROSTER_CACHE[rosterKey];
+  
+  // HARD FIX #3: Check if we have roster data for this team
+  if (rosterData) {
+    const rosterAge = Date.now() - rosterData.updatedAt;
+    const rosterIsStale = rosterAge > 4 * 60 * 60 * 1000; // 4 hours
+    
+    // If roster is recent and player is NOT on it, they're not available
+    if (!rosterIsStale && !rosterData.playerNames.has(playerName)) {
+      console.log(`[Gamenight] Player excluded (not on roster): ${playerName} for ${teamAbbr}`);
+      return { available: false, verified: true, status: 'NOT_ON_ROSTER', onRoster: false };
+    }
+  }
+  
+  if (!cached) {
+    // Player not in cache - we don't know their status
+    // Return available but unverified (allows display with reduced confidence)
+    return { available: true, verified: false, status: 'UNKNOWN', onRoster: false };
+  }
+  
+  // Check if cache is stale (> 4 hours old)
+  const cacheAge = Date.now() - cached.updatedAt;
+  const isStale = cacheAge > 4 * 60 * 60 * 1000; // 4 hours
+  
+  // Check if player is unavailable
+  if (UNAVAILABLE_STATUSES.includes(cached.status)) {
+    console.log(`[Gamenight] Player excluded (${cached.status}): ${playerName}`);
+    return { available: false, verified: !isStale, status: cached.status };
+  }
+  
+  // Check if player is confirmed available
+  if (AVAILABLE_STATUSES.includes(cached.status)) {
+    return { available: true, verified: !isStale, status: cached.status };
+  }
+  
+  // Unknown status - be conservative, treat as questionable
+  // Allow but mark unverified
+  return { available: true, verified: false, status: cached.status };
+};
+
+// Filter a list of players to only those available for matchup
+// Returns: { availablePlayers: string[], hasUnverifiedPlayers: boolean }
+const filterAvailablePlayers = (players, teamAbbr, sport) => {
+  if (!Array.isArray(players) || players.length === 0) {
+    return { availablePlayers: [], hasUnverifiedPlayers: false };
+  }
+  
+  let hasUnverifiedPlayers = false;
+  const availablePlayers = players.filter(playerName => {
+    const { available, verified } = isPlayerAvailableForMatchup(playerName, teamAbbr, sport);
+    if (!verified) hasUnverifiedPlayers = true;
+    return available;
+  });
+  
+  return { availablePlayers, hasUnverifiedPlayers };
+};
+
+// ============================================
+// STATIC PLAYER DATA (Best-effort, last updated Jan 2025)
+// ============================================
 
 // === NBA PLAYERS (2024-25 Season) ===
 const NBA_PLAYERS = {
@@ -453,8 +650,45 @@ const getDivisionsForSport = (sport) => {
 
 const validateGameData = (homeTeam, awayTeam, gameDate) => {
   const issues = [];
+  const criticalMissing = []; // HARD FIX #4: Track critical missing fields separately
   const currentDate = new Date();
   const gameDateTime = new Date(gameDate);
+  
+  // HARD FIX #4: Check for critical null fields FIRST
+  // These are fields that MUST exist for correct operation
+  if (!homeTeam) {
+    criticalMissing.push('HOME_TEAM_NULL');
+  } else {
+    if (!homeTeam.abbreviation) criticalMissing.push('HOME_ABBREVIATION_NULL');
+    if (!homeTeam.name) issues.push('HOME_NAME_MISSING'); // Non-critical, has fallback
+  }
+  
+  if (!awayTeam) {
+    criticalMissing.push('AWAY_TEAM_NULL');
+  } else {
+    if (!awayTeam.abbreviation) criticalMissing.push('AWAY_ABBREVIATION_NULL');
+    if (!awayTeam.name) issues.push('AWAY_NAME_MISSING'); // Non-critical, has fallback
+  }
+  
+  // If critical fields are missing, return immediately with fallback mode
+  if (criticalMissing.length > 0) {
+    const telemetry = {
+      type: 'CRITICAL_DATA_MISSING',
+      criticalMissing,
+      homeTeam: homeTeam?.abbreviation || homeTeam?.name || 'NULL',
+      awayTeam: awayTeam?.abbreviation || awayTeam?.name || 'NULL'
+    };
+    console.error('[Gamenight] Critical data missing:', telemetry);
+    logError(new Error('Critical game data missing'), telemetry);
+    
+    return {
+      valid: false,
+      fallbackMode: true,
+      dataQuality: 'CRITICAL_MISSING',
+      issues: [...criticalMissing, ...issues],
+      criticalMissing
+    };
+  }
   
   // Helper to parse record
   const parseRecord = (record) => {
@@ -493,7 +727,7 @@ const validateGameData = (homeTeam, awayTeam, gameDate) => {
     issues.push(`AWAY_SUSPICIOUS_RECORD: ${awayWinPct.toFixed(3)}`);
   }
   
-  // C. Missing Critical Fields
+  // C. Missing Critical Fields (records)
   if (!homeTeam.record || homeTeam.record === '0-0') {
     issues.push('HOME_MISSING_RECORD');
   }
@@ -501,8 +735,7 @@ const validateGameData = (homeTeam, awayTeam, gameDate) => {
     issues.push('AWAY_MISSING_RECORD');
   }
   
-  // P1 FIX: Log telemetry when data validation issues are detected
-  // This helps diagnose upstream data problems
+  // HARD FIX #4: Log telemetry when data validation issues are detected
   if (issues.length > 0) {
     const telemetry = {
       type: 'DATA_VALIDATION_ISSUE',
@@ -513,7 +746,6 @@ const validateGameData = (homeTeam, awayTeam, gameDate) => {
       awayRecord: awayTeam.record
     };
     console.warn('[Gamenight] Data validation issues:', telemetry);
-    // Fire-and-forget telemetry (don't block on it)
     logError(new Error('Data validation issues detected'), telemetry);
   }
   
@@ -521,7 +753,8 @@ const validateGameData = (homeTeam, awayTeam, gameDate) => {
     valid: issues.length === 0,
     fallbackMode: issues.length > 0,
     dataQuality: issues.length === 0 ? 'HIGH' : 'DEGRADED',
-    issues
+    issues,
+    criticalMissing: []
   };
 };
 
@@ -617,13 +850,25 @@ const calculateStarPowerScore = (homeTeam, awayTeam, sport = 'nba', sportData = 
 // NBA Star Power Calculator
 // ============================================
 const calculateNBAStarPower = (homeTeam, awayTeam) => {
+  const homeAbbr = homeTeam?.abbreviation || '';
+  const awayAbbr = awayTeam?.abbreviation || '';
+  
   // SPORT-SCOPED: Only get NBA players
-  const homeStars = getPlayersForTeam(homeTeam.abbreviation, 'nba');
-  const awayStars = getPlayersForTeam(awayTeam.abbreviation, 'nba');
+  const rawHomeStars = getPlayersForTeam(homeAbbr, 'nba');
+  const rawAwayStars = getPlayersForTeam(awayAbbr, 'nba');
+  
+  // HARD FIX #1: Filter out injured/unavailable players
+  const { availablePlayers: homeStars, hasUnverifiedPlayers: homeUnverified } = 
+    filterAvailablePlayers(rawHomeStars, homeAbbr, 'nba');
+  const { availablePlayers: awayStars, hasUnverifiedPlayers: awayUnverified } = 
+    filterAvailablePlayers(rawAwayStars, awayAbbr, 'nba');
+  
+  const hasUnverifiedPlayers = homeUnverified || awayUnverified;
   
   const { mvp, allStar } = getStarTiers('nba');
   
   // Categorize by tier AND team - keep lists strictly separated
+  // Only use AVAILABLE players
   const homeMVPs = homeStars.filter(s => mvp.includes(s));
   const awayMVPs = awayStars.filter(s => mvp.includes(s));
   const homeAllStars = homeStars.filter(s => allStar.includes(s));
@@ -658,7 +903,11 @@ const calculateNBAStarPower = (homeTeam, awayTeam) => {
     awayStarList = awayAllStars;
   }
   
-  return buildMatchupResult(homeTeam, awayTeam, homeStarList, awayStarList, score, 'nba');
+  // HARD FIX #1: If players are unverified, reduce confidence
+  // This triggers softer language and prevents CLEAR tier
+  const injuryStatusVerified = !hasUnverifiedPlayers;
+  
+  return buildMatchupResult(homeTeam, awayTeam, homeStarList, awayStarList, score, 'nba', injuryStatusVerified);
 };
 
 // ============================================
@@ -669,23 +918,46 @@ const calculateNBAStarPower = (homeTeam, awayTeam) => {
 //   2. ONE player only
 // NEVER show two players from the same team
 // CRITICAL: Only uses NFL_PLAYERS data (no cross-sport contamination)
+// HARD FIX #1: Filters out injured players before selection
 const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
   // P1 FIX: Null-safe abbreviation access
   const homeAbbr = homeTeam?.abbreviation || '';
   const awayAbbr = awayTeam?.abbreviation || '';
   
   // SPORT-SCOPED: Only get NFL players
-  const homeQB = getNFLTeamQB(homeAbbr);
-  const awayQB = getNFLTeamQB(awayAbbr);
+  const rawHomeQB = getNFLTeamQB(homeAbbr);
+  const rawAwayQB = getNFLTeamQB(awayAbbr);
   
   // Get NFL-only team stars
-  const homeStars = getPlayersForTeam(homeAbbr, 'nfl');
-  const awayStars = getPlayersForTeam(awayAbbr, 'nfl');
+  const rawHomeStars = getPlayersForTeam(homeAbbr, 'nfl');
+  const rawAwayStars = getPlayersForTeam(awayAbbr, 'nfl');
   
-  // Get NFL star tiers for categorization
-  const { mvp, allStar } = getStarTiers('nfl');
+  // HARD FIX #1: Filter injured players
+  let hasUnverifiedPlayers = false;
   
-  // Categorize by type (using NFL-specific tier lists)
+  // Check QBs for availability
+  let homeQB = null;
+  let awayQB = null;
+  if (rawHomeQB) {
+    const { available, verified } = isPlayerAvailableForMatchup(rawHomeQB, homeAbbr, 'nfl');
+    if (available) homeQB = rawHomeQB;
+    if (!verified) hasUnverifiedPlayers = true;
+  }
+  if (rawAwayQB) {
+    const { available, verified } = isPlayerAvailableForMatchup(rawAwayQB, awayAbbr, 'nfl');
+    if (available) awayQB = rawAwayQB;
+    if (!verified) hasUnverifiedPlayers = true;
+  }
+  
+  // Filter team stars for availability
+  const { availablePlayers: homeStars, hasUnverifiedPlayers: homeUnverified } = 
+    filterAvailablePlayers(rawHomeStars, homeAbbr, 'nfl');
+  const { availablePlayers: awayStars, hasUnverifiedPlayers: awayUnverified } = 
+    filterAvailablePlayers(rawAwayStars, awayAbbr, 'nfl');
+  
+  if (homeUnverified || awayUnverified) hasUnverifiedPlayers = true;
+  
+  // Categorize by type (using NFL-specific defensive stars)
   const homeDefense = homeStars.filter(p => 
     ['Micah Parsons', 'T.J. Watt', 'Nick Bosa', 'Myles Garrett'].includes(p)
   );
@@ -698,43 +970,44 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
   let matchupText = '';
   let matchupLabel = '';
   let displayedStars = [];
+  const injuryStatusVerified = !hasUnverifiedPlayers;
   
-  // CASE 1: Both teams have star QBs - QB vs QB matchup (TWO players, DIFFERENT teams)
-  if (homeQB && awayQB && homeAbbr !== awayAbbr) {
+  // CASE 1: Both teams have AVAILABLE star QBs
+  if (homeQB && awayQB && homeAbbr && awayAbbr && homeAbbr !== awayAbbr) {
     score = 20;
     matchupType = 'vs';
     matchupText = `${awayQB} vs ${homeQB}`;
-    matchupLabel = 'Expected QB Matchup'; // P0 FIX: Softer language (injury status unknown)
+    matchupLabel = injuryStatusVerified ? 'QB Matchup' : 'Expected QB Matchup';
     displayedStars = [awayQB, homeQB];
   }
   // CASE 2: One team has QB, other has defensive star (TWO players, DIFFERENT teams)
   else if ((homeQB && awayDefense.length > 0) || (awayQB && homeDefense.length > 0)) {
     score = 15;
-    if (homeQB && awayDefense.length > 0 && homeAbbr !== awayAbbr) {
+    if (homeQB && awayDefense.length > 0 && homeAbbr && awayAbbr && homeAbbr !== awayAbbr) {
       matchupType = 'vs';
       matchupText = `${awayDefense[0]} vs ${homeQB}`;
-      matchupLabel = 'Key Players'; // P0 FIX: Softer than "Key Matchup"
+      matchupLabel = injuryStatusVerified ? 'Key Matchup' : 'Key Players';
       displayedStars = [awayDefense[0], homeQB];
-    } else if (awayQB && homeDefense.length > 0 && homeAbbr !== awayAbbr) {
+    } else if (awayQB && homeDefense.length > 0 && homeAbbr && awayAbbr && homeAbbr !== awayAbbr) {
       matchupType = 'vs';
       matchupText = `${awayQB} vs ${homeDefense[0]}`;
-      matchupLabel = 'Key Players'; // P0 FIX: Softer than "Key Matchup"
+      matchupLabel = injuryStatusVerified ? 'Key Matchup' : 'Key Players';
       displayedStars = [awayQB, homeDefense[0]];
     } else {
       // Fallback - show single player only
       matchupType = 'featured';
       const singleStar = homeQB || awayQB || homeDefense[0] || awayDefense[0];
       matchupText = singleStar;
-      matchupLabel = 'Featured Player';
-      displayedStars = [singleStar];
+      matchupLabel = injuryStatusVerified ? 'Featured Player' : 'Player to Watch';
+      displayedStars = singleStar ? [singleStar] : [];
     }
   }
   // CASE 3: Both teams have non-QB stars (TWO players, DIFFERENT teams)
-  else if (homeStars.length > 0 && awayStars.length > 0 && homeAbbr !== awayAbbr) {
+  else if (homeStars.length > 0 && awayStars.length > 0 && homeAbbr && awayAbbr && homeAbbr !== awayAbbr) {
     score = 12;
     matchupType = 'vs';
     matchupText = `${awayStars[0]} vs ${homeStars[0]}`;
-    matchupLabel = 'Key Players'; // P0 FIX: Softer language
+    matchupLabel = injuryStatusVerified ? 'Key Matchup' : 'Key Players';
     displayedStars = [awayStars[0], homeStars[0]];
   }
   // CASE 4: Only one team has star QB (ONE player only)
@@ -743,7 +1016,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     matchupType = 'featured';
     const qbName = awayQB || homeQB;
     matchupText = qbName;
-    matchupLabel = 'Featured QB';
+    matchupLabel = injuryStatusVerified ? 'Featured QB' : 'QB to Watch';
     displayedStars = [qbName];
   }
   // CASE 5: Only one team has notable players (ONE player only)
@@ -752,10 +1025,10 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     matchupType = 'featured';
     const singleStar = awayStars[0] || homeStars[0];
     matchupText = singleStar;
-    matchupLabel = 'Featured Player';
-    displayedStars = [singleStar];
+    matchupLabel = injuryStatusVerified ? 'Featured Player' : 'Player to Watch';
+    displayedStars = singleStar ? [singleStar] : [];
   }
-  // CASE 6: No notable players
+  // CASE 6: No AVAILABLE notable players
   else {
     score = 5;
     matchupType = 'none';
@@ -772,8 +1045,8 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     matchupType,
     matchupText,
     matchupLabel,
-    // P0 FIX: Flag that injury status is NOT verified
-    injuryStatusVerified: false,
+    // HARD FIX #1: Computed from actual injury data availability
+    injuryStatusVerified,
     reason: matchupText || 'No standout players'
   };
 };
@@ -792,6 +1065,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
 //   - ONE player only
 //   - NEVER show two players from the same team
 // CRITICAL: Only uses MLB_PLAYERS data (no cross-sport contamination)
+// HARD FIX #1: Filters injured players before selection
 const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitcher = null) => {
   // P1 FIX: Null-safe abbreviation access
   const homeAbbr = homeTeam?.abbreviation || '';
@@ -802,105 +1076,123 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
   let matchupText = '';
   let matchupLabel = '';
   let displayedStars = [];
+  let hasUnverifiedPlayers = false;
   
   // ===== PRIORITY 1: Starting Pitcher vs Starting Pitcher =====
-  // This is the PRIMARY MLB matchup - pitching drives watchability
-  if (homePitcher && awayPitcher && homeAbbr !== awayAbbr) {
-    // Check if either pitcher is an ace for scoring bonus (using sport-scoped function)
-    const isHomeAce = isMLBAcePitcher(homePitcher);
-    const isAwayAce = isMLBAcePitcher(awayPitcher);
+  // Pitchers come from ESPN "probables" - relatively reliable but could be scratched
+  // HARD FIX #1: Check injury cache for pitchers
+  let verifiedHomePitcher = null;
+  let verifiedAwayPitcher = null;
+  
+  if (homePitcher) {
+    const { available, verified } = isPlayerAvailableForMatchup(homePitcher, homeAbbr, 'mlb');
+    if (available) verifiedHomePitcher = homePitcher;
+    if (!verified) hasUnverifiedPlayers = true;
+  }
+  if (awayPitcher) {
+    const { available, verified } = isPlayerAvailableForMatchup(awayPitcher, awayAbbr, 'mlb');
+    if (available) verifiedAwayPitcher = awayPitcher;
+    if (!verified) hasUnverifiedPlayers = true;
+  }
+  
+  // Pitcher vs Pitcher (both available)
+  if (verifiedHomePitcher && verifiedAwayPitcher && homeAbbr && awayAbbr && homeAbbr !== awayAbbr) {
+    const isHomeAce = isMLBAcePitcher(verifiedHomePitcher);
+    const isAwayAce = isMLBAcePitcher(verifiedAwayPitcher);
     
     if (isHomeAce && isAwayAce) {
-      score = 20; // Ace vs Ace is premium
+      score = 20;
     } else if (isHomeAce || isAwayAce) {
-      score = 17; // One ace
+      score = 17;
     } else {
-      score = 14; // Two confirmed starters, neither ace
+      score = 14;
     }
     
     matchupType = 'vs';
-    matchupText = `${awayPitcher} vs ${homePitcher}`;
-    matchupLabel = 'Starting Pitchers';
-    displayedStars = [awayPitcher, homePitcher];
+    matchupText = `${verifiedAwayPitcher} vs ${verifiedHomePitcher}`;
+    matchupLabel = hasUnverifiedPlayers ? 'Probable Pitchers' : 'Starting Pitchers';
+    displayedStars = [verifiedAwayPitcher, verifiedHomePitcher];
     
     return {
       score,
       stars: displayedStars,
-      homeStars: [homePitcher],
-      awayStars: [awayPitcher],
+      homeStars: [verifiedHomePitcher],
+      awayStars: [verifiedAwayPitcher],
       matchupType,
       matchupText,
       matchupLabel,
-      // P0 FIX: Pitcher data from ESPN is "probable" not confirmed
-      injuryStatusVerified: false,
+      injuryStatusVerified: !hasUnverifiedPlayers,
       reason: matchupText
     };
   }
   
   // ===== PRIORITY 2: Featured Starting Pitcher (one confirmed) =====
-  if (homePitcher || awayPitcher) {
-    const pitcher = awayPitcher || homePitcher;
+  if (verifiedHomePitcher || verifiedAwayPitcher) {
+    const pitcher = verifiedAwayPitcher || verifiedHomePitcher;
     const isAce = isMLBAcePitcher(pitcher);
     
     score = isAce ? 15 : 12;
     matchupType = 'featured';
-    matchupText = pitcher; // Just the name, label provides context
-    matchupLabel = 'Starting Pitcher';
+    matchupText = pitcher;
+    matchupLabel = hasUnverifiedPlayers ? 'Probable Starter' : 'Starting Pitcher';
     displayedStars = [pitcher];
     
     return {
       score,
       stars: displayedStars,
-      homeStars: homePitcher ? [homePitcher] : [],
-      awayStars: awayPitcher ? [awayPitcher] : [],
+      homeStars: verifiedHomePitcher ? [verifiedHomePitcher] : [],
+      awayStars: verifiedAwayPitcher ? [verifiedAwayPitcher] : [],
       matchupType,
       matchupText,
       matchupLabel,
-      // P0 FIX: Pitcher data from ESPN is "probable" not confirmed
-      injuryStatusVerified: false,
+      injuryStatusVerified: !hasUnverifiedPlayers,
       reason: matchupText
     };
   }
   
   // ===== PRIORITY 3: FALLBACK - Top Batters (no pitcher data available) =====
-  // Only used when starting pitcher data is not available
-  // MVP tier is used for SCORING BOOST only, not primary selection
-  
   // SPORT-SCOPED: Only get MLB players
-  const homeStars = getPlayersForTeam(homeAbbr, 'mlb');
-  const awayStars = getPlayersForTeam(awayAbbr, 'mlb');
+  const rawHomeStars = getPlayersForTeam(homeAbbr, 'mlb');
+  const rawAwayStars = getPlayersForTeam(awayAbbr, 'mlb');
   
-  // Filter to batters only (exclude pitchers from batter list, except Ohtani who hits too)
-  const homeBatters = homeStars.filter(p => !isMLBAcePitcher(p) || p === 'Shohei Ohtani');
-  const awayBatters = awayStars.filter(p => !isMLBAcePitcher(p) || p === 'Shohei Ohtani');
+  // Filter to batters only, then filter for availability
+  const homeStarBatters = rawHomeStars.filter(p => !isMLBAcePitcher(p) || p === 'Shohei Ohtani');
+  const awayStarBatters = rawAwayStars.filter(p => !isMLBAcePitcher(p) || p === 'Shohei Ohtani');
   
-  // Get MVP tier for SCORING BONUS only (not selection priority)
+  // HARD FIX #1: Filter injured batters
+  const { availablePlayers: homeBatters, hasUnverifiedPlayers: homeUnverified } = 
+    filterAvailablePlayers(homeStarBatters, homeAbbr, 'mlb');
+  const { availablePlayers: awayBatters, hasUnverifiedPlayers: awayUnverified } = 
+    filterAvailablePlayers(awayStarBatters, awayAbbr, 'mlb');
+  
+  if (homeUnverified || awayUnverified) hasUnverifiedPlayers = true;
+  const injuryStatusVerified = !hasUnverifiedPlayers;
+  
+  // Get MVP tier for SCORING BONUS only
   const { mvp } = getStarTiers('mlb');
   
-  // CASE 3a: Both teams have star batters (TWO players, DIFFERENT teams)
-  if (homeBatters.length > 0 && awayBatters.length > 0 && homeAbbr !== awayAbbr) {
-    // Select top batter from each team (first in list)
+  // CASE 3a: Both teams have AVAILABLE star batters
+  if (homeBatters.length > 0 && awayBatters.length > 0 && homeAbbr && awayAbbr && homeAbbr !== awayAbbr) {
     const homeBatter = homeBatters[0];
     const awayBatter = awayBatters[0];
     
-    // MVP status adds scoring bonus (tie-breaker), doesn't change selection
     const homeIsMVP = mvp.includes(homeBatter);
     const awayIsMVP = mvp.includes(awayBatter);
     
     if (homeIsMVP && awayIsMVP) {
-      score = 15; // Both MVPs - highest batter matchup score
+      score = 15;
     } else if (homeIsMVP || awayIsMVP) {
-      score = 12; // One MVP
+      score = 12;
     } else {
-      score = 10; // Star batters, no MVPs
+      score = 10;
     }
     
     matchupType = 'vs';
     matchupText = `${awayBatter} vs ${homeBatter}`;
-    matchupLabel = 'Star Batters'; // Clearly indicate this is batters, not pitchers
+    matchupLabel = injuryStatusVerified ? 'Star Batters' : 'Batters to Watch';
     displayedStars = [awayBatter, homeBatter];
   }
-  // CASE 3b: One team has star batters (ONE player only)
+  // CASE 3b: One team has star batters
   else if (homeBatters.length > 0 || awayBatters.length > 0) {
     const singleBatter = awayBatters[0] || homeBatters[0];
     const isMVP = mvp.includes(singleBatter);
@@ -908,10 +1200,10 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
     score = isMVP ? 10 : 8;
     matchupType = 'featured';
     matchupText = singleBatter;
-    matchupLabel = 'Featured Batter';
+    matchupLabel = injuryStatusVerified ? 'Featured Batter' : 'Batter to Watch';
     displayedStars = [singleBatter];
   }
-  // CASE 3c: No notable batters
+  // CASE 3c: No AVAILABLE notable batters
   else {
     score = 5;
     matchupType = 'none';
@@ -928,9 +1220,10 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
     matchupType,
     matchupText,
     matchupLabel,
-    // P0 FIX: Static player list, injury status NOT verified
-    injuryStatusVerified: false,
+    injuryStatusVerified,
     reason: matchupText || 'No pitcher data available'
+  };
+};
   };
 };
 
@@ -941,7 +1234,8 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
 //   1. Two players from DIFFERENT teams ("Player A vs Player B")
 //   2. ONE player only ("Features Player A")
 // NEVER show two players from the same team
-const buildMatchupResult = (homeTeam, awayTeam, homeStarList, awayStarList, score, sport) => {
+// HARD FIX #1: injuryStatusVerified determines label confidence
+const buildMatchupResult = (homeTeam, awayTeam, homeStarList, awayStarList, score, sport, injuryStatusVerified = false) => {
   const bestHomeStar = homeStarList[0] || null;
   const bestAwayStar = awayStarList[0] || null;
   // P1 FIX: Null-safe abbreviation access
@@ -950,9 +1244,16 @@ const buildMatchupResult = (homeTeam, awayTeam, homeStarList, awayStarList, scor
   
   let matchupType = 'none';
   let matchupText = '';
-  // P0 FIX: Use softer labels acknowledging we don't have real-time injury data
-  // Players may be injured/resting - this is "expected" not "confirmed"
-  let matchupLabel = sport === 'nba' ? 'Expected Matchup' : 'Key Players';
+  
+  // HARD FIX #1: Label reflects actual verification status
+  // If verified: confident labels. If not: hedged labels.
+  let matchupLabel;
+  if (injuryStatusVerified) {
+    matchupLabel = sport === 'nba' ? 'Star Matchup' : 'Key Players';
+  } else {
+    matchupLabel = sport === 'nba' ? 'Expected Matchup' : 'Key Players';
+  }
+  
   let allStars = [];
   
   // CRITICAL VALIDATION: Only "vs" if BOTH teams have stars AND teams are different
@@ -965,7 +1266,7 @@ const buildMatchupResult = (homeTeam, awayTeam, homeStarList, awayStarList, scor
     // Only one team has stars - show ONLY ONE player, never multiple from same team
     matchupType = 'featured';
     const singleStar = bestAwayStar || bestHomeStar;
-    matchupLabel = 'Featured Player';
+    matchupLabel = injuryStatusVerified ? 'Featured Player' : 'Player to Watch';
     matchupText = `${singleStar}`;
     allStars = [singleStar];
   } else {
@@ -983,9 +1284,8 @@ const buildMatchupResult = (homeTeam, awayTeam, homeStarList, awayStarList, scor
     matchupType,
     matchupText,
     matchupLabel,
-    // P0 FIX: Flag that injury status is NOT verified (static list, no real-time data)
-    // This allows UI to show appropriate disclaimers
-    injuryStatusVerified: false,
+    // HARD FIX #1: This is now computed from actual injury data availability
+    injuryStatusVerified,
     reason: matchupText || 'No major stars'
   };
 };
@@ -1119,6 +1419,11 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
   
   // Apply weights based on fallback mode
   let totalScore;
+  
+  // HARD FIX #1: If injury status is unverified and we have a "vs" matchup,
+  // we're asserting players will play without confirmation - reduce confidence
+  const hasUnverifiedVsMatchup = (starPower.matchupType === 'vs') && !starPower.injuryStatusVerified;
+  
   if (validation.fallbackMode) {
     // Fallback weights: Stakes 10, StarPower 25, Comp 10, Narrative 25, Access 10 = 80 max
     totalScore = Math.round(
@@ -1130,6 +1435,13 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
     );
     // Cap at 70 in fallback mode
     totalScore = Math.min(70, totalScore);
+  } else if (hasUnverifiedVsMatchup) {
+    // HARD FIX #1: Normal calculation but reduce star power contribution
+    // We're showing players without injury verification
+    const reducedStarPower = Math.round(starPower.score * 0.7); // 30% penalty
+    totalScore = stakes.score + reducedStarPower + competitiveness.score + narrative.score + accessibility.score;
+    // Cap at 85 when showing unverified matchups
+    totalScore = Math.min(85, totalScore);
   } else {
     // Normal weights
     totalScore = stakes.score + starPower.score + competitiveness.score + narrative.score + accessibility.score;
@@ -1266,7 +1578,12 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
   return {
     score: totalScore,
     whyWatch,
-    validation,
+    validation: {
+      ...validation,
+      // HARD FIX #1: Include injury verification in validation
+      injuryStatusVerified: starPower.injuryStatusVerified || false,
+      hasUnverifiedVsMatchup
+    },
     components: {
       stakes: stakes.score,
       starPower: starPower.score,
@@ -1289,7 +1606,7 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
 // CONFIDENCE TIER CALCULATOR
 // ============================================
 
-const calculateConfidenceTier = (games) => {
+const calculateConfidenceTier = (games, dataFreshness = null) => {
   if (!games || games.length === 0) {
     return {
       tier: 'WEAK',
@@ -1304,12 +1621,27 @@ const calculateConfidenceTier = (games) => {
   const secondScore = sortedGames[1]?.score || 0;
   const scoreLead = topScore - secondScore;
   const topValidation = sortedGames[0]?.validation || { dataQuality: 'HIGH', fallbackMode: false };
+  const topGameStatus = sortedGames[0]?.status || 'scheduled';
   
-  // CLEAR PICK: Score >= 80, HIGH quality, lead >= 10, no fallback
+  // HARD FIX #1: Check if top game has unverified "vs" matchup
+  const hasUnverifiedVsMatchup = topValidation.hasUnverifiedVsMatchup || false;
+  
+  // HARD FIX #2: Check data freshness
+  let isDataStale = false;
+  let dataAgeMinutes = 0;
+  if (dataFreshness?.fetchTimestamp) {
+    const freshnessCheck = validateDataFreshness(dataFreshness.fetchTimestamp, topGameStatus);
+    isDataStale = !freshnessCheck.fresh;
+    dataAgeMinutes = freshnessCheck.ageMinutes;
+  }
+  
+  // CLEAR PICK: Score >= 80, HIGH quality, lead >= 10, no fallback, injuries verified, data fresh
   if (topScore >= 80 && 
       topValidation.dataQuality === 'HIGH' && 
       scoreLead >= 10 && 
-      !topValidation.fallbackMode) {
+      !topValidation.fallbackMode &&
+      !hasUnverifiedVsMatchup &&
+      !isDataStale) { // HARD FIX #2: Require fresh data for CLEAR
     return {
       tier: 'CLEAR',
       color: 'green',
@@ -1320,11 +1652,17 @@ const calculateConfidenceTier = (games) => {
   
   // SOLID PICK: Score >= 65, or lead >= 8
   if (topScore >= 65 || scoreLead >= 8) {
+    let subtext = 'The most compelling game tonight';
+    if (isDataStale) {
+      subtext = `Top option (data ${dataAgeMinutes}m old)`; // HARD FIX #2: Show staleness
+    } else if (hasUnverifiedVsMatchup) {
+      subtext = 'Top option tonight (check injury reports)';
+    }
     return {
       tier: 'SOLID',
       color: 'yellow',
       header: "Tonight's Best Option",
-      subtext: 'The most compelling game tonight'
+      subtext
     };
   }
   
@@ -1333,7 +1671,9 @@ const calculateConfidenceTier = (games) => {
     tier: 'WEAK',
     color: 'gray',
     header: 'Best Available Tonight',
-    subtext: 'No clear standout on a lighter slate'
+    subtext: isDataStale 
+      ? 'Data may be outdated - refresh recommended'
+      : 'No clear standout on a lighter slate'
   };
 };
 
@@ -1722,7 +2062,7 @@ const api = {
       return { pick: null, message, confidenceTier: calculateConfidenceTier([]), dataFreshness };
     }
     const bestGame = games[0];
-    const confidenceTier = calculateConfidenceTier(games);
+    const confidenceTier = calculateConfidenceTier(games, dataFreshness); // HARD FIX #2: Pass freshness
     return {
       pick: {
         id: bestGame.id,
@@ -1963,6 +2303,12 @@ const api = {
         rosterError = e.message;
         console.error('Roster parse error:', e);
         logError(e, { context: 'rosterParse', teamId, sport });
+      }
+      
+      // HARD FIX #1: Update injury cache with roster data
+      // This allows future star selections to filter out injured players
+      if (roster.length > 0 && teamId) {
+        updateInjuryCache(teamId, sport, roster);
       }
       
       // Parse record stats
