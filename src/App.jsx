@@ -122,6 +122,599 @@ const getGameStatusText = (status) => {
   return 'Live';
 };
 
+// ============================================
+// WATCHABILITY ALGORITHM v2
+// ============================================
+
+// Star Player Database (by team abbreviation)
+const STAR_PLAYERS = {
+  // === NBA ===
+  NBA_MVP_TIER: ['LeBron James', 'Stephen Curry', 'Giannis Antetokounmpo', 'Nikola Jokic', 'Luka Doncic', 
+             'Joel Embiid', 'Jayson Tatum', 'Kevin Durant', 'Shai Gilgeous-Alexander', 'Anthony Edwards'],
+  
+  NBA_ALL_STAR: ['Donovan Mitchell', 'Trae Young', 'Tyrese Haliburton', 'Ja Morant', 'De\'Aaron Fox',
+                  'Devin Booker', 'Kyrie Irving', 'Jimmy Butler', 'Bam Adebayo', 'Paolo Banchero',
+                  'Jaylen Brown', 'Domantas Sabonis', 'LaMelo Ball', 'Cade Cunningham', 'Jalen Brunson',
+                  'Karl-Anthony Towns', 'Julius Randle', 'Damian Lillard', 'Victor Wembanyama', 'Zion Williamson',
+                  'Alperen Sengun', 'Franz Wagner', 'Scottie Barnes', 'Desmond Bane', 'Tyler Herro'],
+  
+  // === NFL ===
+  NFL_MVP_TIER: ['Patrick Mahomes', 'Josh Allen', 'Lamar Jackson', 'Joe Burrow', 'Jalen Hurts',
+                 'Travis Kelce', 'Tyreek Hill', 'Justin Jefferson', 'CeeDee Lamb', 'Ja\'Marr Chase'],
+  
+  NFL_ALL_PRO: ['Micah Parsons', 'T.J. Watt', 'Nick Bosa', 'Myles Garrett', 'Aaron Donald',
+                'Derrick Henry', 'Saquon Barkley', 'Christian McCaffrey', 'Davante Adams', 'A.J. Brown',
+                'Amon-Ra St. Brown', 'Garrett Wilson', 'George Kittle', 'Tua Tagovailoa', 'Dak Prescott',
+                'Jordan Love', 'Brock Purdy', 'C.J. Stroud', 'Caleb Williams'],
+  
+  // === MLB ===
+  MLB_MVP_TIER: ['Shohei Ohtani', 'Mookie Betts', 'Ronald Acuña Jr.', 'Corey Seager', 'Freddie Freeman',
+                 'Aaron Judge', 'Juan Soto', 'Bryce Harper', 'Mike Trout', 'Trea Turner'],
+  
+  MLB_ALL_STAR: ['Manny Machado', 'Fernando Tatis Jr.', 'Julio Rodriguez', 'Bobby Witt Jr.', 'Gunnar Henderson',
+                 'Marcus Semien', 'Jose Ramirez', 'Vladimir Guerrero Jr.', 'Bo Bichette', 'Rafael Devers',
+                 'Yordan Alvarez', 'Kyle Tucker', 'Corbin Carroll', 'Elly De La Cruz', 'Matt Olson'],
+  
+  // Team to Star mapping (primary stars per team) - NBA
+  TEAM_STARS: {
+    // NBA
+    'LAL': ['LeBron James'], 'GSW': ['Stephen Curry'], 'MIL': ['Giannis Antetokounmpo', 'Damian Lillard'],
+    'DEN': ['Nikola Jokic'], 'DAL': ['Luka Doncic', 'Kyrie Irving'], 'PHI': ['Joel Embiid'],
+    'BOS': ['Jayson Tatum', 'Jaylen Brown'], 'PHX': ['Kevin Durant', 'Devin Booker'],
+    'OKC': ['Shai Gilgeous-Alexander'], 'MIN': ['Anthony Edwards', 'Julius Randle'],
+    'CLE': ['Donovan Mitchell'], 'ATL': ['Trae Young'], 'IND': ['Tyrese Haliburton'],
+    'MEM': ['Ja Morant', 'Desmond Bane'], 'SAC': ['De\'Aaron Fox', 'Domantas Sabonis'],
+    'MIA': ['Jimmy Butler', 'Bam Adebayo', 'Tyler Herro'], 'ORL': ['Paolo Banchero', 'Franz Wagner'],
+    'CHA': ['LaMelo Ball'], 'DET': ['Cade Cunningham'], 'NY': ['Jalen Brunson', 'Karl-Anthony Towns'],
+    'NYK': ['Jalen Brunson', 'Karl-Anthony Towns'], 'SA': ['Victor Wembanyama'],
+    'NO': ['Zion Williamson'], 'NOP': ['Zion Williamson'], 'HOU': ['Alperen Sengun'],
+    'TOR': ['Scottie Barnes'], 'LAC': [], 'BKN': [], 'CHI': [], 'WAS': [], 'POR': [],
+    'UTAH': [], 'UTA': [],
+    
+    // NFL
+    'KC': ['Patrick Mahomes', 'Travis Kelce'], 'BUF': ['Josh Allen'], 'BAL': ['Lamar Jackson'],
+    'CIN': ['Joe Burrow', 'Ja\'Marr Chase'], 'SF': ['Brock Purdy', 'Nick Bosa'],
+    'MIA': ['Tyreek Hill', 'Tua Tagovailoa'], 'MIN': ['Justin Jefferson'],
+    'DAL': ['CeeDee Lamb', 'Micah Parsons', 'Dak Prescott'], 'PHI': ['Jalen Hurts', 'A.J. Brown', 'Saquon Barkley'],
+    'PIT': ['T.J. Watt'], 'CLE': ['Myles Garrett'], 'DET': ['Amon-Ra St. Brown'],
+    'GB': ['Jordan Love'], 'HOU': ['C.J. Stroud'], 'CHI': ['Caleb Williams'],
+    'NYJ': ['Garrett Wilson'], 'LV': ['Davante Adams'], 'TEN': ['Derrick Henry'],
+    'LAR': ['Aaron Donald'], 'SEA': [], 'ARI': [], 'CAR': [], 'TB': [], 'NO': [],
+    'ATL': [], 'NYG': [], 'WAS': [], 'NE': [], 'IND': [], 'JAX': [], 'DEN': [], 'LAC': [],
+    
+    // MLB
+    'LAD': ['Shohei Ohtani', 'Mookie Betts', 'Freddie Freeman'], 'NYY': ['Aaron Judge', 'Juan Soto'],
+    'ATL': ['Ronald Acuña Jr.', 'Matt Olson'], 'TEX': ['Corey Seager', 'Marcus Semien'],
+    'PHI': ['Bryce Harper', 'Trea Turner'], 'LAA': ['Mike Trout'],
+    'SD': ['Manny Machado', 'Fernando Tatis Jr.'], 'SEA': ['Julio Rodriguez'],
+    'KC': ['Bobby Witt Jr.'], 'BAL': ['Gunnar Henderson'], 'CLE': ['Jose Ramirez'],
+    'TOR': ['Vladimir Guerrero Jr.', 'Bo Bichette'], 'BOS': ['Rafael Devers'],
+    'HOU': ['Yordan Alvarez', 'Kyle Tucker'], 'ARI': ['Corbin Carroll'],
+    'CIN': ['Elly De La Cruz'], 'SF': [], 'CHC': [], 'STL': [], 'MIL': [], 'NYM': [],
+    'TB': [], 'MIN': [], 'DET': [], 'CHW': [], 'OAK': [], 'MIA': [], 'COL': [], 'PIT': [], 'WAS': []
+  }
+};
+
+// Get star tier based on sport
+const getStarTiers = (sport) => {
+  if (sport === 'nfl') {
+    return { mvp: STAR_PLAYERS.NFL_MVP_TIER, allStar: STAR_PLAYERS.NFL_ALL_PRO };
+  } else if (sport === 'mlb') {
+    return { mvp: STAR_PLAYERS.MLB_MVP_TIER, allStar: STAR_PLAYERS.MLB_ALL_STAR };
+  }
+  return { mvp: STAR_PLAYERS.NBA_MVP_TIER, allStar: STAR_PLAYERS.NBA_ALL_STAR };
+};
+
+// Historic Rivalries (all sports)
+const RIVALRIES = {
+  // === NBA ===
+  'BOS-LAL': 3, 'LAL-BOS': 3, // Historic
+  'CHI-DET': 2, 'DET-CHI': 2, // Bad Boys era
+  'GSW-CLE': 2, 'CLE-GSW': 2, // Finals rivalry
+  'LAC-LAL': 2, 'LAL-LAC': 2, // Battle of LA
+  'BOS-PHI': 2, 'PHI-BOS': 2, // Atlantic rivalry
+  'DAL-HOU': 2, 'HOU-DAL': 2, // Texas rivalry
+  'DAL-SA': 2, 'SA-DAL': 2,   // Texas rivalry
+  'NY-BKN': 2, 'BKN-NY': 2,   // NYC rivalry
+  'NYK-BKN': 2, 'BKN-NYK': 2, // NYC rivalry
+  'MIA-BOS': 2, 'BOS-MIA': 2, // Playoff history
+  'GSW-LAL': 1, 'LAL-GSW': 1, // California
+  'PHX-LAL': 1, 'LAL-PHX': 1, // West rivalry
+  
+  // === NFL ===
+  'DAL-WAS': 3, 'WAS-DAL': 3, // NFC East historic
+  'GB-CHI': 3, 'CHI-GB': 3,   // Oldest rivalry
+  'BAL-PIT': 3, 'PIT-BAL': 3, // AFC North
+  'KC-LV': 2, 'LV-KC': 2,     // AFC West
+  'SF-LAR': 2, 'LAR-SF': 2,   // NFC West
+  'SF-SEA': 2, 'SEA-SF': 2,   // NFC West
+  'NE-NYJ': 2, 'NYJ-NE': 2,   // AFC East
+  'DAL-PHI': 2, 'PHI-DAL': 2, // NFC East
+  'NYG-PHI': 2, 'PHI-NYG': 2, // NFC East
+  'MIN-GB': 2, 'GB-MIN': 2,   // NFC North
+  'CIN-CLE': 2, 'CLE-CIN': 2, // Ohio
+  'DEN-KC': 1, 'KC-DEN': 1,   // AFC West
+  'TB-NO': 1, 'NO-TB': 1,     // NFC South
+  
+  // === MLB ===
+  'NYY-BOS': 3, 'BOS-NYY': 3, // Greatest rivalry
+  'LAD-SF': 3, 'SF-LAD': 3,   // West coast historic
+  'CHC-STL': 3, 'STL-CHC': 3, // Central rivalry
+  'NYY-NYM': 2, 'NYM-NYY': 2, // Subway Series
+  'LAD-SD': 2, 'SD-LAD': 2,   // SoCal
+  'LAA-LAD': 2, 'LAD-LAA': 2, // Freeway Series
+  'ATL-NYM': 1, 'NYM-ATL': 1, // NL East
+  'HOU-TEX': 2, 'TEX-HOU': 2, // Texas
+  'CLE-DET': 1, 'DET-CLE': 1, // Central
+  'PHI-NYM': 1, 'NYM-PHI': 1, // NL East
+};
+
+// Division mappings for division matchup detection (all sports)
+const DIVISIONS = {
+  // NBA
+  NBA_ATLANTIC: ['BOS', 'BKN', 'NY', 'NYK', 'PHI', 'TOR'],
+  NBA_CENTRAL: ['CHI', 'CLE', 'DET', 'IND', 'MIL'],
+  NBA_SOUTHEAST: ['ATL', 'CHA', 'MIA', 'ORL', 'WAS'],
+  NBA_NORTHWEST: ['DEN', 'MIN', 'OKC', 'POR', 'UTAH', 'UTA'],
+  NBA_PACIFIC: ['GSW', 'LAC', 'LAL', 'PHX', 'SAC'],
+  NBA_SOUTHWEST: ['DAL', 'HOU', 'MEM', 'NO', 'NOP', 'SA'],
+  
+  // NFL
+  NFL_AFC_EAST: ['BUF', 'MIA', 'NE', 'NYJ'],
+  NFL_AFC_NORTH: ['BAL', 'CIN', 'CLE', 'PIT'],
+  NFL_AFC_SOUTH: ['HOU', 'IND', 'JAX', 'TEN'],
+  NFL_AFC_WEST: ['DEN', 'KC', 'LV', 'LAC'],
+  NFL_NFC_EAST: ['DAL', 'NYG', 'PHI', 'WAS'],
+  NFL_NFC_NORTH: ['CHI', 'DET', 'GB', 'MIN'],
+  NFL_NFC_SOUTH: ['ATL', 'CAR', 'NO', 'TB'],
+  NFL_NFC_WEST: ['ARI', 'LAR', 'SEA', 'SF'],
+  
+  // MLB
+  MLB_AL_EAST: ['BAL', 'BOS', 'NYY', 'TB', 'TOR'],
+  MLB_AL_CENTRAL: ['CLE', 'CHW', 'DET', 'KC', 'MIN'],
+  MLB_AL_WEST: ['HOU', 'LAA', 'OAK', 'SEA', 'TEX'],
+  MLB_NL_EAST: ['ATL', 'MIA', 'NYM', 'PHI', 'WAS'],
+  MLB_NL_CENTRAL: ['CHC', 'CIN', 'MIL', 'PIT', 'STL'],
+  MLB_NL_WEST: ['ARI', 'COL', 'LAD', 'SD', 'SF'],
+};
+
+// Get divisions for a sport
+const getDivisionsForSport = (sport) => {
+  const prefix = sport.toUpperCase() + '_';
+  return Object.entries(DIVISIONS)
+    .filter(([key]) => key.startsWith(prefix) || (sport === 'nba' && !key.includes('_')))
+    .reduce((acc, [key, teams]) => {
+      acc[key] = teams;
+      return acc;
+    }, {});
+};
+
+// ============================================
+// DATA VALIDATION & SANITY CHECKS
+// ============================================
+
+const validateGameData = (homeTeam, awayTeam, gameDate) => {
+  const issues = [];
+  const currentDate = new Date();
+  const gameDateTime = new Date(gameDate);
+  
+  // Helper to parse record
+  const parseRecord = (record) => {
+    if (!record || record === '0-0') return { wins: 0, losses: 0, games: 0 };
+    const parts = record.split('-').map(Number);
+    return { wins: parts[0] || 0, losses: parts[1] || 0, games: (parts[0] || 0) + (parts[1] || 0) };
+  };
+  
+  const homeStats = parseRecord(homeTeam.record);
+  const awayStats = parseRecord(awayTeam.record);
+  
+  // A. Season Progress Validation
+  const month = currentDate.getMonth(); // 0-indexed
+  const day = currentDate.getDate();
+  
+  let minGamesRequired = 10; // Default early season
+  if (month > 1 || (month === 1 && day >= 15)) minGamesRequired = 50; // After Feb 15
+  else if (month > 0 || (month === 0 && day >= 15)) minGamesRequired = 30; // After Jan 15
+  else if (month === 11 && day >= 15) minGamesRequired = 20; // After Dec 15
+  
+  if (homeStats.games < minGamesRequired && homeStats.games > 0) {
+    issues.push(`HOME_INSUFFICIENT_GAMES: ${homeStats.games} < ${minGamesRequired}`);
+  }
+  if (awayStats.games < minGamesRequired && awayStats.games > 0) {
+    issues.push(`AWAY_INSUFFICIENT_GAMES: ${awayStats.games} < ${minGamesRequired}`);
+  }
+  
+  // B. Record Plausibility Check
+  const homeWinPct = homeStats.games > 0 ? homeStats.wins / homeStats.games : 0.5;
+  const awayWinPct = awayStats.games > 0 ? awayStats.wins / awayStats.games : 0.5;
+  
+  if (homeStats.games > 15 && (homeWinPct > 0.85 || homeWinPct < 0.15)) {
+    issues.push(`HOME_SUSPICIOUS_RECORD: ${homeWinPct.toFixed(3)}`);
+  }
+  if (awayStats.games > 15 && (awayWinPct > 0.85 || awayWinPct < 0.15)) {
+    issues.push(`AWAY_SUSPICIOUS_RECORD: ${awayWinPct.toFixed(3)}`);
+  }
+  
+  // C. Missing Critical Fields
+  if (!homeTeam.record || homeTeam.record === '0-0') {
+    issues.push('HOME_MISSING_RECORD');
+  }
+  if (!awayTeam.record || awayTeam.record === '0-0') {
+    issues.push('AWAY_MISSING_RECORD');
+  }
+  
+  return {
+    valid: issues.length === 0,
+    fallbackMode: issues.length > 0,
+    dataQuality: issues.length === 0 ? 'HIGH' : 'DEGRADED',
+    issues
+  };
+};
+
+// ============================================
+// SCORING COMPONENTS
+// ============================================
+
+// 1. STAKES SCORE (0-30 pts) - How much does this game matter?
+const calculateStakesScore = (homeTeam, awayTeam, validation, sport = 'nba') => {
+  if (validation.fallbackMode) return { score: 10, reason: 'Data quality limited' };
+  
+  const parseRecord = (record) => {
+    if (!record) return { wins: 0, losses: 0, pct: 0.5 };
+    const [w, l] = record.split('-').map(Number);
+    return { wins: w || 0, losses: l || 0, pct: (w / (w + l)) || 0.5 };
+  };
+  
+  const home = parseRecord(homeTeam.record);
+  const away = parseRecord(awayTeam.record);
+  
+  let score = 5; // Base score
+  let reason = 'Regular season matchup';
+  
+  // Both teams above .500 (playoff contenders)
+  if (home.pct > 0.5 && away.pct > 0.5) {
+    score = 18;
+    reason = 'Both teams in playoff contention';
+  }
+  // Both teams above .550 (strong contenders)
+  else if (home.pct > 0.55 && away.pct > 0.55) {
+    score = 22;
+    reason = 'Elite matchup between top teams';
+  }
+  // One team good, one fighting
+  else if ((home.pct > 0.5 && away.pct > 0.4) || (away.pct > 0.5 && home.pct > 0.4)) {
+    score = 15;
+    reason = 'Competitive matchup';
+  }
+  // One good team vs struggling team
+  else if (home.pct > 0.55 || away.pct > 0.55) {
+    score = 10;
+    reason = 'Features a top team';
+  }
+  // Both struggling
+  else if (home.pct < 0.4 && away.pct < 0.4) {
+    score = 5;
+    reason = 'Rebuilding teams';
+  }
+  
+  // Check for same division (adds stakes) - use sport-specific divisions
+  const sportDivisions = getDivisionsForSport(sport);
+  const homeDivision = Object.entries(sportDivisions).find(([_, teams]) => 
+    teams.includes(homeTeam.abbreviation))?.[0];
+  const awayDivision = Object.entries(sportDivisions).find(([_, teams]) => 
+    teams.includes(awayTeam.abbreviation))?.[0];
+  
+  if (homeDivision && homeDivision === awayDivision) {
+    score = Math.min(30, score + 5);
+    reason += ' • Division matchup';
+  }
+  
+  return { score: Math.min(30, score), reason };
+};
+
+// 2. STAR POWER SCORE (0-20 pts) - Who's playing?
+const calculateStarPowerScore = (homeTeam, awayTeam, sport = 'nba') => {
+  const homeStars = STAR_PLAYERS.TEAM_STARS[homeTeam.abbreviation] || [];
+  const awayStars = STAR_PLAYERS.TEAM_STARS[awayTeam.abbreviation] || [];
+  
+  // Get sport-specific star tiers
+  const { mvp, allStar } = getStarTiers(sport);
+  
+  const homeMVPs = homeStars.filter(s => mvp.includes(s));
+  const awayMVPs = awayStars.filter(s => mvp.includes(s));
+  const homeAllStars = homeStars.filter(s => allStar.includes(s));
+  const awayAllStars = awayStars.filter(s => allStar.includes(s));
+  
+  const totalMVPs = homeMVPs.length + awayMVPs.length;
+  const totalAllStars = homeAllStars.length + awayAllStars.length;
+  
+  let score = 5;
+  let stars = [];
+  
+  // 2+ MVP-caliber players
+  if (totalMVPs >= 2) {
+    score = 20;
+    stars = [...homeMVPs, ...awayMVPs];
+  }
+  // 1 MVP + 1 All-Star
+  else if (totalMVPs === 1 && totalAllStars >= 1) {
+    score = 17;
+    stars = [...homeMVPs, ...homeAllStars.slice(0, 1), ...awayMVPs, ...awayAllStars.slice(0, 1)];
+  }
+  // 2+ All-Stars
+  else if (totalAllStars >= 2) {
+    score = 15;
+    stars = [...homeAllStars, ...awayAllStars].slice(0, 4);
+  }
+  // 1 MVP
+  else if (totalMVPs === 1) {
+    score = 13;
+    stars = [...homeMVPs, ...awayMVPs];
+  }
+  // 1-2 All-Stars
+  else if (totalAllStars >= 1) {
+    score = 10;
+    stars = [...homeAllStars, ...awayAllStars].slice(0, 2);
+  }
+  
+  return { 
+    score, 
+    stars: stars.slice(0, 4),
+    reason: stars.length > 0 ? `Features ${stars.slice(0, 2).join(' vs ')}` : 'No major stars'
+  };
+};
+
+// 3. COMPETITIVENESS SCORE (0-20 pts) - Will it be close?
+const calculateCompetitivenessScore = (homeTeam, awayTeam, validation) => {
+  if (validation.fallbackMode) return { score: 10, reason: 'Unable to assess', diff: null };
+  
+  const parseWinPct = (record) => {
+    if (!record) return 0.5;
+    const [w, l] = record.split('-').map(Number);
+    return (w / (w + l)) || 0.5;
+  };
+  
+  const homePct = parseWinPct(homeTeam.record);
+  const awayPct = parseWinPct(awayTeam.record);
+  const diff = Math.abs(homePct - awayPct);
+  
+  let score = 4;
+  let reason = 'Likely mismatch';
+  
+  if (diff <= 0.05) {
+    score = 20;
+    reason = 'Evenly matched teams';
+  } else if (diff <= 0.10) {
+    score = 16;
+    reason = 'Close matchup';
+  } else if (diff <= 0.15) {
+    score = 12;
+    reason = 'Slight edge to one team';
+  } else if (diff <= 0.25) {
+    score = 8;
+    reason = 'Clear favorite';
+  }
+  
+  return { score, reason, diff: (diff * 100).toFixed(1) };
+};
+
+// 4. NARRATIVE SCORE (0-20 pts) - Is there a story?
+const calculateNarrativeScore = (homeTeam, awayTeam, headline) => {
+  let score = 5;
+  let reasons = [];
+  
+  // Check for rivalry
+  const rivalryKey1 = `${homeTeam.abbreviation}-${awayTeam.abbreviation}`;
+  const rivalryKey2 = `${awayTeam.abbreviation}-${homeTeam.abbreviation}`;
+  const rivalryIntensity = RIVALRIES[rivalryKey1] || RIVALRIES[rivalryKey2] || 0;
+  
+  if (rivalryIntensity === 3) {
+    score = 20;
+    reasons.push('Historic rivalry');
+  } else if (rivalryIntensity === 2) {
+    score = 15;
+    reasons.push('Notable rivalry');
+  } else if (rivalryIntensity === 1) {
+    score = 10;
+    reasons.push('Regional rivalry');
+  }
+  
+  // ESPN headline bonus
+  if (headline && headline.length > 10) {
+    score = Math.min(20, score + 3);
+    reasons.push('Featured matchup');
+  }
+  
+  // Same state/city matchups
+  const sameCity = (homeTeam.city === awayTeam.city);
+  if (sameCity && rivalryIntensity === 0) {
+    score = Math.min(20, score + 8);
+    reasons.push('City showdown');
+  }
+  
+  return { 
+    score, 
+    reason: reasons.length > 0 ? reasons.join(' • ') : 'No major storyline'
+  };
+};
+
+// 5. ACCESSIBILITY SCORE (0-10 pts) - Can people watch it?
+const calculateAccessibilityScore = (network, startTime) => {
+  let score = 3; // Regional only default
+  let reason = 'Regional broadcast';
+  
+  const nationalNetworks = ['ESPN', 'TNT', 'ABC', 'NBC', 'FOX'];
+  const secondaryNetworks = ['NBA TV', 'ESPN2', 'FS1', 'Peacock', 'NBATV'];
+  
+  if (network) {
+    if (nationalNetworks.some(n => network.toUpperCase().includes(n))) {
+      score = 10;
+      reason = `National TV (${network})`;
+    } else if (secondaryNetworks.some(n => network.toUpperCase().includes(n))) {
+      score = 7;
+      reason = `Streaming/Cable (${network})`;
+    } else {
+      score = 5;
+      reason = `Available on ${network}`;
+    }
+  }
+  
+  // Primetime bonus (7-10 PM ET start)
+  if (startTime) {
+    const hour = new Date(startTime).getHours();
+    if (hour >= 19 && hour <= 22) {
+      score = Math.min(10, score + 1);
+    }
+  }
+  
+  return { score, reason };
+};
+
+// ============================================
+// MAIN WATCHABILITY CALCULATOR
+// ============================================
+
+const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline, sport = 'nba') => {
+  // Validate data
+  const validation = validateGameData(homeTeam, awayTeam, startTime);
+  
+  // Calculate component scores (pass sport to relevant functions)
+  const stakes = calculateStakesScore(homeTeam, awayTeam, validation, sport);
+  const starPower = calculateStarPowerScore(homeTeam, awayTeam, sport);
+  const competitiveness = calculateCompetitivenessScore(homeTeam, awayTeam, validation);
+  const narrative = calculateNarrativeScore(homeTeam, awayTeam, headline);
+  const accessibility = calculateAccessibilityScore(network, startTime);
+  
+  // Apply weights based on fallback mode
+  let totalScore;
+  if (validation.fallbackMode) {
+    // Fallback weights: Stakes 10, StarPower 25, Comp 10, Narrative 25, Access 10 = 80 max
+    totalScore = Math.round(
+      (stakes.score / 30 * 10) +
+      (starPower.score / 20 * 25) +
+      (competitiveness.score / 20 * 10) +
+      (narrative.score / 20 * 25) +
+      (accessibility.score / 10 * 10)
+    );
+    // Cap at 70 in fallback mode
+    totalScore = Math.min(70, totalScore);
+  } else {
+    // Normal weights
+    totalScore = stakes.score + starPower.score + competitiveness.score + narrative.score + accessibility.score;
+  }
+  
+  // Build "Why Watch" text
+  const supportingReasons = [];
+  if (starPower.stars.length > 0) supportingReasons.push(starPower.reason);
+  if (stakes.score >= 15) supportingReasons.push(stakes.reason);
+  if (competitiveness.score >= 16) supportingReasons.push(competitiveness.reason);
+  if (narrative.score >= 10) supportingReasons.push(narrative.reason);
+  if (accessibility.score >= 7) supportingReasons.push(accessibility.reason);
+  
+  // Primary reason is the highest-scoring component
+  const components = [
+    { name: 'stakes', score: stakes.score, reason: stakes.reason },
+    { name: 'starPower', score: starPower.score, reason: starPower.reason },
+    { name: 'competitiveness', score: competitiveness.score, reason: competitiveness.reason },
+    { name: 'narrative', score: narrative.score, reason: narrative.reason }
+  ].sort((a, b) => b.score - a.score);
+  
+  const primaryReason = components[0].reason;
+  
+  // Build whyWatch text (avoid standings language in fallback)
+  let whyWatch;
+  if (validation.fallbackMode) {
+    whyWatch = starPower.stars.length > 0 
+      ? `${starPower.stars.slice(0, 2).join(' vs ')} headline this compelling matchup.`
+      : `${awayTeam.name} visits ${homeTeam.name} in tonight's action.`;
+  } else {
+    if (totalScore >= 70) {
+      whyWatch = `${primaryReason}. ${supportingReasons.slice(1, 3).join('. ')}.`;
+    } else if (totalScore >= 55) {
+      whyWatch = `${primaryReason}. ${supportingReasons[1] || 'Solid viewing option'}.`;
+    } else {
+      whyWatch = `${awayTeam.name} at ${homeTeam.name}. ${primaryReason}.`;
+    }
+  }
+  
+  return {
+    score: totalScore,
+    whyWatch,
+    validation,
+    components: {
+      stakes: stakes.score,
+      starPower: starPower.score,
+      competitiveness: competitiveness.score,
+      narrative: narrative.score,
+      accessibility: accessibility.score
+    },
+    details: {
+      stakes,
+      starPower,
+      competitiveness,
+      narrative,
+      accessibility
+    },
+    supportingReasons: supportingReasons.slice(0, 3)
+  };
+};
+
+// ============================================
+// CONFIDENCE TIER CALCULATOR
+// ============================================
+
+const calculateConfidenceTier = (games) => {
+  if (!games || games.length === 0) {
+    return {
+      tier: 'WEAK',
+      color: 'gray',
+      header: 'No Games Tonight',
+      subtext: 'Check back tomorrow for picks'
+    };
+  }
+  
+  const sortedGames = [...games].sort((a, b) => b.score - a.score);
+  const topScore = sortedGames[0]?.score || 0;
+  const secondScore = sortedGames[1]?.score || 0;
+  const scoreLead = topScore - secondScore;
+  const topValidation = sortedGames[0]?.validation || { dataQuality: 'HIGH', fallbackMode: false };
+  
+  // CLEAR PICK: Score >= 80, HIGH quality, lead >= 10, no fallback
+  if (topScore >= 80 && 
+      topValidation.dataQuality === 'HIGH' && 
+      scoreLead >= 10 && 
+      !topValidation.fallbackMode) {
+    return {
+      tier: 'CLEAR',
+      color: 'green',
+      header: "Tonight's Clear Pick",
+      subtext: 'The must-watch game tonight'
+    };
+  }
+  
+  // SOLID PICK: Score >= 65, or lead >= 8
+  if (topScore >= 65 || scoreLead >= 8) {
+    return {
+      tier: 'SOLID',
+      color: 'yellow',
+      header: "Tonight's Best Option",
+      subtext: 'The most compelling game tonight'
+    };
+  }
+  
+  // WEAK SLATE: Default
+  return {
+    tier: 'WEAK',
+    color: 'gray',
+    header: 'Best Available Tonight',
+    subtext: 'No clear standout on a lighter slate'
+  };
+};
+
+// ============================================
+// ESPN GAME TRANSFORMER (Updated)
+// ============================================
+
 const transformESPNGame = (event, sport) => {
   const competition = event.competitions?.[0];
   if (!competition) return null;
@@ -131,36 +724,39 @@ const transformESPNGame = (event, sport) => {
   
   if (!homeTeam || !awayTeam) return null;
 
-  // Calculate watchability score
-  const parseWinPct = (record) => {
-    if (!record) return 0.5;
-    const [wins, losses] = record.split('-').map(Number);
-    return wins / (wins + losses) || 0.5;
-  };
-
   const homeRecord = homeTeam.records?.[0]?.summary || '0-0';
   const awayRecord = awayTeam.records?.[0]?.summary || '0-0';
-  const combinedWinPct = (parseWinPct(homeRecord) + parseWinPct(awayRecord)) / 2;
-  
-  let score = 50 + (combinedWinPct * 30);
-  
-  // National TV bonus
   const broadcasts = competition.broadcasts?.[0]?.names || [];
-  const nationalNetworks = ['ESPN', 'TNT', 'ABC', 'NBC', 'CBS', 'FOX', 'NBA TV'];
   const network = broadcasts[0] || null;
-  if (broadcasts.some(b => nationalNetworks.some(n => b.includes(n)))) {
-    score += 15;
-  }
-
-  // Generate why watch
-  const homeName = homeTeam.team?.displayName;
-  const awayName = awayTeam.team?.displayName;
   const headline = event.competitions?.[0]?.headlines?.[0]?.shortLinkText;
   
-  let whyWatch = headline || `${awayName} visits ${homeName} in tonight's action.`;
-  if (combinedWinPct > 0.55) {
-    whyWatch = `Elite matchup! ${awayName} (${awayRecord}) at ${homeName} (${homeRecord}).`;
-  }
+  const homeName = homeTeam.team?.displayName;
+  const awayName = awayTeam.team?.displayName;
+  
+  // Build team objects for watchability calculation
+  const homeTeamData = {
+    name: homeName,
+    abbreviation: homeTeam.team?.abbreviation,
+    record: homeRecord,
+    city: homeTeam.team?.location
+  };
+  
+  const awayTeamData = {
+    name: awayName,
+    abbreviation: awayTeam.team?.abbreviation,
+    record: awayRecord,
+    city: awayTeam.team?.location
+  };
+  
+  // Calculate watchability with new algorithm
+  const watchability = calculateWatchability(
+    homeTeamData,
+    awayTeamData,
+    network,
+    event.date,
+    headline,
+    sport
+  );
 
   return {
     id: event.id,
@@ -186,12 +782,15 @@ const transformESPNGame = (event, sport) => {
       record: awayRecord,
       city: awayTeam.team?.location,
     },
-    score: Math.round(score),
-    whyWatch,
+    score: watchability.score,
+    whyWatch: watchability.whyWatch,
+    validation: watchability.validation,
+    components: watchability.components,
+    supportingReasons: watchability.supportingReasons,
     signals: {
-      standingsRelevance: combinedWinPct > 0.55 ? 'High' : combinedWinPct > 0.45 ? 'Medium' : 'Low',
-      starMatchup: null,
-      rivalry: null,
+      standingsRelevance: watchability.components.stakes >= 18 ? 'High' : watchability.components.stakes >= 12 ? 'Medium' : 'Low',
+      starMatchup: watchability.details.starPower.stars.slice(0, 2).join(' vs ') || null,
+      rivalry: watchability.details.narrative.score >= 10 ? watchability.details.narrative.reason : null,
     },
     betting: null,
   };
@@ -405,9 +1004,10 @@ const api = {
       return { pick: null, message: error };
     }
     if (games.length === 0) {
-      return { pick: null, message: 'No games today' };
+      return { pick: null, message: 'No games today', confidenceTier: calculateConfidenceTier([]) };
     }
     const bestGame = games[0];
+    const confidenceTier = calculateConfidenceTier(games);
     return {
       pick: {
         id: bestGame.id,
@@ -416,7 +1016,11 @@ const api = {
         whyWatch: bestGame.whyWatch,
         source: 'live',
         game: bestGame,
-      }
+        validation: bestGame.validation,
+        components: bestGame.components,
+        supportingReasons: bestGame.supportingReasons,
+      },
+      confidenceTier
     };
   },
 
@@ -1113,7 +1717,14 @@ const AnimatedButton = ({ children, primary, className, onClick, disabled }) => 
 // Roster Row Component - Clean & Scannable
 // ============================================
 const RosterRow = ({ player, onClick, isStarter, sport, battingOrder, showPitcherHand, isInferred }) => {
+  // Guard: Handle null/undefined player
+  if (!player) {
+    return null;
+  }
+  
   const isInjured = player.status && player.status !== 'Active' && player.status !== 'active';
+  const playerName = player.name || 'Unknown Player';
+  const playerPosition = player.position || 'N/A';
   
   return (
     <button
@@ -1149,22 +1760,22 @@ const RosterRow = ({ player, onClick, isStarter, sport, battingOrder, showPitche
             : 'bg-gradient-to-br from-gray-700 to-gray-800 text-gray-400'
           }`}
         >
-          {player.jersey || '?'}
+          {player.jersey || playerName.charAt(0) || '?'}
         </div>
       )}
       
       {/* Player Info */}
       <div className="flex-1 min-w-0">
         <div className={`text-sm truncate flex items-center gap-1.5 ${isStarter ? 'font-semibold text-white' : 'font-medium text-gray-300'}`}>
-          {player.name}
+          {playerName}
           {isInferred && (
             <span className="text-[9px] text-yellow-500 bg-yellow-500/10 px-1.5 py-0.5 rounded">PROJ</span>
           )}
         </div>
         <div className="text-xs text-gray-500 flex items-center gap-1.5">
-          <span className="font-medium">{player.position}</span>
+          <span className="font-medium">{playerPosition}</span>
           {player.jersey && <span>#{player.jersey}</span>}
-          {showPitcherHand && <span className="text-gray-600">• RHP</span>}
+          {showPitcherHand && player.throws && <span className="text-gray-600">• {player.throws === 'L' ? 'LHP' : 'RHP'}</span>}
         </div>
       </div>
       
@@ -1298,7 +1909,13 @@ export default function GamenightApp() {
           setLoadError(pickRes.message);
         }
         
-        setPick(pickRes.pick);
+        // Include confidenceTier in pick object
+        const pickWithTier = pickRes.pick ? {
+          ...pickRes.pick,
+          confidenceTier: pickRes.confidenceTier
+        } : null;
+        
+        setPick(pickWithTier);
         setGames(gamesRes.games || []);
         setChallenge(challengeRes.challenge);
         setUserStats(statsRes.stats || { points: 0, streak: 0, accuracy: 0 });
@@ -1519,15 +2136,32 @@ export default function GamenightApp() {
               <>
                 {/* Best Game Card */}
                 <div className="bg-gradient-to-b from-white/5 to-white/[0.02] border border-white/5 rounded-3xl p-6 mb-6 relative overflow-hidden">
-                  <div className="absolute top-0 left-1/4 right-1/4 h-px bg-gradient-to-r from-transparent via-orange-500 to-transparent opacity-60" />
+                  <div className={`absolute top-0 left-1/4 right-1/4 h-px bg-gradient-to-r from-transparent ${
+                    pick?.confidenceTier?.tier === 'CLEAR' ? 'via-green-500' : 
+                    pick?.confidenceTier?.tier === 'SOLID' ? 'via-orange-500' : 'via-gray-500'
+                  } to-transparent opacity-60`} />
                   
                   <div className="flex justify-between items-center mb-5">
-                    <span className="text-[11px] font-bold text-orange-400 uppercase tracking-wider flex items-center gap-2">
-                      <span className="w-2 h-2 bg-orange-500 rounded-full animate-pulse" />
-                      Tonight's Pick
-                    </span>
+                    <div>
+                      <span className={`text-[11px] font-bold uppercase tracking-wider flex items-center gap-2 ${
+                        pick?.confidenceTier?.tier === 'CLEAR' ? 'text-green-400' :
+                        pick?.confidenceTier?.tier === 'SOLID' ? 'text-orange-400' : 'text-gray-400'
+                      }`}>
+                        <span className={`w-2 h-2 rounded-full animate-pulse ${
+                          pick?.confidenceTier?.tier === 'CLEAR' ? 'bg-green-500' :
+                          pick?.confidenceTier?.tier === 'SOLID' ? 'bg-orange-500' : 'bg-gray-500'
+                        }`} />
+                        {pick?.confidenceTier?.header || "Tonight's Pick"}
+                      </span>
+                      {pick?.confidenceTier?.subtext && (
+                        <div className="text-[10px] text-gray-500 mt-1">{pick.confidenceTier.subtext}</div>
+                      )}
+                    </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-lg font-extrabold text-orange-400">{bestGame.score}</span>
+                      <span className={`text-lg font-extrabold ${
+                        bestGame.score >= 75 ? 'text-green-400' :
+                        bestGame.score >= 60 ? 'text-orange-400' : 'text-gray-400'
+                      }`}>{bestGame.score}</span>
                       <span className="text-xs font-semibold text-gray-400 px-3 py-1.5 bg-white/5 rounded-xl">{activeSport.toUpperCase()}</span>
                     </div>
                   </div>
@@ -1581,10 +2215,56 @@ export default function GamenightApp() {
                     )}
                   </div>
 
-                  <div className="bg-gradient-to-br from-orange-500/10 to-orange-500/5 border border-orange-500/20 rounded-2xl p-4 mb-5">
-                    <div className="text-[10px] font-bold text-orange-400 uppercase tracking-wider mb-2">Why Watch</div>
-                    <div className="text-sm leading-relaxed">{pick?.whyWatch || bestGame.whyWatch}</div>
+                  <div className={`bg-gradient-to-br ${
+                    pick?.confidenceTier?.tier === 'CLEAR' ? 'from-green-500/10 to-green-500/5 border-green-500/20' :
+                    pick?.confidenceTier?.tier === 'SOLID' ? 'from-orange-500/10 to-orange-500/5 border-orange-500/20' :
+                    'from-gray-500/10 to-gray-500/5 border-gray-500/20'
+                  } border rounded-2xl p-4 mb-5`}>
+                    <div className={`text-[10px] font-bold uppercase tracking-wider mb-2 ${
+                      pick?.confidenceTier?.tier === 'CLEAR' ? 'text-green-400' :
+                      pick?.confidenceTier?.tier === 'SOLID' ? 'text-orange-400' : 'text-gray-400'
+                    }`}>Why Watch</div>
+                    <div className="text-sm leading-relaxed mb-3">{pick?.whyWatch || bestGame.whyWatch}</div>
+                    
+                    {/* Supporting Reasons */}
+                    {bestGame.supportingReasons && bestGame.supportingReasons.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-white/5">
+                        {bestGame.supportingReasons.slice(0, 3).map((reason, i) => (
+                          <span key={i} className="text-[10px] text-gray-400 px-2 py-1 bg-white/5 rounded-lg">
+                            {reason}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
+
+                  {/* Score Components Breakdown */}
+                  {bestGame.components && (
+                    <div className="grid grid-cols-5 gap-1 mb-5 p-3 bg-white/[0.02] rounded-xl">
+                      {[
+                        { key: 'stakes', label: 'Stakes', max: 30 },
+                        { key: 'starPower', label: 'Stars', max: 20 },
+                        { key: 'competitiveness', label: 'Close', max: 20 },
+                        { key: 'narrative', label: 'Story', max: 20 },
+                        { key: 'accessibility', label: 'Access', max: 10 }
+                      ].map(({ key, label, max }) => {
+                        const val = bestGame.components[key] || 0;
+                        const pct = (val / max) * 100;
+                        return (
+                          <div key={key} className="text-center">
+                            <div className="text-[9px] text-gray-500 uppercase mb-1">{label}</div>
+                            <div className="h-1 bg-white/10 rounded-full overflow-hidden mb-1">
+                              <div 
+                                className={`h-full rounded-full ${pct >= 70 ? 'bg-green-500' : pct >= 50 ? 'bg-orange-500' : 'bg-gray-500'}`}
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                            <div className="text-[10px] font-semibold text-gray-400">{val}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
 
                   {bestGame.signals && (
                     <div className="grid grid-cols-2 gap-2.5 mb-5">
@@ -2379,9 +3059,19 @@ export default function GamenightApp() {
                         <>
                           {/* ============ NBA ROSTER ============ */}
                           {activeSport === 'nba' && (() => {
+                            // Guard: Check for valid roster array
+                            const roster = teamDetails.roster || [];
+                            if (roster.length === 0) {
+                              return (
+                                <div className="text-center py-8 bg-white/[0.02] rounded-2xl border border-white/5">
+                                  <div className="text-sm text-gray-400">No roster data available</div>
+                                </div>
+                              );
+                            }
+                            
                             // Get players ESPN marked as starters
-                            const espnStarters = teamDetails.roster.filter(p => p.isStarter);
-                            const nonStarters = teamDetails.roster.filter(p => !p.isStarter);
+                            const espnStarters = roster.filter(p => p.isStarter);
+                            const nonStarters = roster.filter(p => !p.isStarter);
                             
                             // Position priority for filling gaps
                             const positionPriority = ['PG', 'SG', 'SF', 'PF', 'C'];
@@ -2445,21 +3135,12 @@ export default function GamenightApp() {
                             );
                             
                             // Bench is everyone not in displayStarters
-                            const displayBench = teamDetails.roster.filter(p => !displayStarters.includes(p));
+                            const displayBench = roster.filter(p => !displayStarters.includes(p));
                             
                             // Determine label
                             const hasFullESPNStarters = espnStarters.length >= 5;
                             const hasPartialESPNStarters = espnStarters.length > 0 && espnStarters.length < 5;
                             const hasNoESPNStarters = espnStarters.length === 0;
-                            
-                            // Debug logging (remove in production)
-                            console.log('[NBA Roster Debug]', {
-                              totalRoster: teamDetails.roster.length,
-                              espnStarters: espnStarters.length,
-                              displayStarters: displayStarters.length,
-                              displayBench: displayBench.length,
-                              starterNames: displayStarters.map(p => p.name)
-                            });
                             
                             return (
                               <>
@@ -2475,24 +3156,32 @@ export default function GamenightApp() {
                                     )}
                                   </div>
                                   
-                                  {displayStarters.length < 5 && (
-                                    <div className="text-xs text-gray-500 mb-2 italic">
-                                      Starters not fully available — showing best estimate ({displayStarters.length}/5)
+                                  {displayStarters.length === 0 ? (
+                                    <div className="text-center py-6 bg-white/[0.02] rounded-xl border border-white/5">
+                                      <div className="text-sm text-gray-500">Starting lineup unavailable</div>
                                     </div>
+                                  ) : (
+                                    <>
+                                      {displayStarters.length < 5 && (
+                                        <div className="text-xs text-gray-500 mb-2 italic">
+                                          Starters not fully available — showing best estimate ({displayStarters.length}/5)
+                                        </div>
+                                      )}
+                                      
+                                      <div className="space-y-1">
+                                        {displayStarters.map((player, i) => (
+                                          <RosterRow 
+                                            key={player.id || i} 
+                                            player={player} 
+                                            onClick={() => setSelectedPlayer(player)}
+                                            isStarter={true}
+                                            sport="nba"
+                                            isInferred={player._inferred}
+                                          />
+                                        ))}
+                                      </div>
+                                    </>
                                   )}
-                                  
-                                  <div className="space-y-1">
-                                    {displayStarters.map((player, i) => (
-                                      <RosterRow 
-                                        key={player.id || i} 
-                                        player={player} 
-                                        onClick={() => setSelectedPlayer(player)}
-                                        isStarter={true}
-                                        sport="nba"
-                                        isInferred={player._inferred}
-                                      />
-                                    ))}
-                                  </div>
                                 </div>
                                 
                                 {/* Bench */}
@@ -2503,7 +3192,7 @@ export default function GamenightApp() {
                                       <span className="text-[10px] text-gray-600">{displayBench.length} players</span>
                                     </div>
                                     <div className="space-y-1">
-                                      {displayBench.slice(0, 8).map((player, i) => (
+                                      {displayBench.map((player, i) => (
                                         <RosterRow 
                                           key={player.id || i} 
                                           player={player} 
@@ -2513,11 +3202,6 @@ export default function GamenightApp() {
                                         />
                                       ))}
                                     </div>
-                                    {displayBench.length > 8 && (
-                                      <button className="w-full text-center py-3 text-xs text-gray-500 hover:text-gray-400 transition-colors">
-                                        +{displayBench.length - 8} more players
-                                      </button>
-                                    )}
                                   </div>
                                 )}
                               </>
@@ -2527,8 +3211,20 @@ export default function GamenightApp() {
                           {/* ============ NFL ROSTER ============ */}
                           {/* KEY PLAYERS ONLY: One starter per position group, not all backups */}
                           {activeSport === 'nfl' && (() => {
+                            // Guard: Check for valid roster array
+                            const roster = teamDetails.roster || [];
+                            if (roster.length === 0) {
+                              return (
+                                <div className="text-center py-8 bg-white/[0.02] rounded-2xl border border-white/5">
+                                  <div className="text-sm text-gray-400">No roster data available</div>
+                                  <div className="text-xs text-gray-600 mt-1">Check back later for updates</div>
+                                </div>
+                              );
+                            }
+                            
                             // Check if player is injured/out
                             const isOut = (player) => {
+                              if (!player) return false;
                               const status = player.status?.toLowerCase() || '';
                               return status === 'out' || status === 'ir' || status === 'injured reserve' || 
                                      status === 'pup' || status === 'nfi' || status === 'suspended';
@@ -2553,8 +3249,8 @@ export default function GamenightApp() {
                             };
                             
                             // The roster is sorted by depth chart - first player at each position is the starter
-                            const activePlayers = teamDetails.roster.filter(p => !isOut(p));
-                            const outPlayers = teamDetails.roster.filter(p => isOut(p));
+                            const activePlayers = roster.filter(p => p && !isOut(p));
+                            const outPlayers = roster.filter(p => p && isOut(p));
                             
                             // Pick KEY players: first (starter) from each position group
                             const keyPlayers = [];
@@ -2563,6 +3259,7 @@ export default function GamenightApp() {
                             
                             // Go through roster in depth chart order and pick starters
                             activePlayers.forEach(player => {
+                              if (!player || !player.position) return;
                               const pos = player.position;
                               
                               // Track how many we've picked from each position
@@ -2618,7 +3315,7 @@ export default function GamenightApp() {
                                 isKey = true;
                               }
                               
-                              if (isKey && !usedIds.has(player.id)) {
+                              if (isKey && player.id && !usedIds.has(player.id)) {
                                 keyPlayers.push({ ...player, _isPrimaryQB: pos === 'QB' && keyPlayers.filter(p => p.position === 'QB').length === 0 });
                                 usedIds.add(player.id);
                                 positionCounts[pos] = (positionCounts[pos] || 0) + 1;
@@ -2626,70 +3323,95 @@ export default function GamenightApp() {
                             });
                             
                             // Remaining players (depth)
-                            const depthPlayers = activePlayers.filter(p => !usedIds.has(p.id));
+                            const depthPlayers = activePlayers.filter(p => p && p.id && !usedIds.has(p.id));
                             
-                            // Debug logging
-                            console.log('[NFL Key Players]', {
-                              keyPlayersCount: keyPlayers.length,
-                              keyPlayers: keyPlayers.map(p => `${p.position}: ${p.name}`),
-                              depthCount: depthPlayers.length,
-                              outCount: outPlayers.length
-                            });
+                            // Fallback: If key player selection failed, show all active players grouped by position
+                            const keyPlayersFailed = keyPlayers.length === 0 && activePlayers.length > 0;
                             
                             return (
                               <>
-                                {/* Key Players - Starters Only */}
-                                <div className="mb-6">
-                                  <div className="flex items-center gap-2 mb-3">
-                                    <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Key Players</span>
-                                    <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">Starters</span>
+                                {/* Fallback: Show all players if key player selection failed */}
+                                {keyPlayersFailed ? (
+                                  <div className="mb-6">
+                                    <div className="flex items-center gap-2 mb-3">
+                                      <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Full Roster</span>
+                                      <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">{activePlayers.length} players</span>
+                                    </div>
+                                    <div className="text-xs text-gray-500 mb-3 italic">Position data unavailable — showing all players</div>
+                                    <div className="space-y-1">
+                                      {activePlayers.map((player, i) => (
+                                        <RosterRow 
+                                          key={player.id || i} 
+                                          player={player} 
+                                          onClick={() => setSelectedPlayer(player)}
+                                          isStarter={false}
+                                          sport="nfl"
+                                        />
+                                      ))}
+                                    </div>
                                   </div>
-                                  <div className="space-y-1">
-                                    {keyPlayers.map((player, i) => (
-                                      <RosterRow 
-                                        key={player.id || i} 
-                                        player={player} 
-                                        onClick={() => setSelectedPlayer(player)}
-                                        isStarter={true}
-                                        sport="nfl"
-                                      />
-                                    ))}
-                                  </div>
-                                </div>
-                                
-                                {/* Depth / Backups - Collapsed */}
-                                {depthPlayers.length > 0 && (
-                                  <div className="mb-6 border-t border-gray-800 pt-4">
-                                    <button
-                                      className="w-full flex items-center justify-between py-2 text-left"
-                                      onClick={() => setShowNFLDepth(!showNFLDepth)}
-                                    >
-                                      <div className="flex items-center gap-2">
-                                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Depth / Rotation</span>
-                                        <span className="text-[10px] text-gray-600 bg-white/5 px-2 py-0.5 rounded-full">{depthPlayers.length}</span>
+                                ) : (
+                                  <>
+                                    {/* Key Players - Starters Only */}
+                                    <div className="mb-6">
+                                      <div className="flex items-center gap-2 mb-3">
+                                        <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Key Players</span>
+                                        <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">Starters</span>
                                       </div>
-                                      <svg 
-                                        className={`w-4 h-4 text-gray-500 transition-transform ${showNFLDepth ? 'rotate-180' : ''}`} 
-                                        fill="none" stroke="currentColor" viewBox="0 0 24 24"
-                                      >
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                                      </svg>
-                                    </button>
+                                      {keyPlayers.length === 0 ? (
+                                        <div className="text-center py-6 bg-white/[0.02] rounded-xl border border-white/5">
+                                          <div className="text-sm text-gray-500">Key players unavailable</div>
+                                        </div>
+                                      ) : (
+                                        <div className="space-y-1">
+                                          {keyPlayers.map((player, i) => (
+                                            <RosterRow 
+                                              key={player.id || i} 
+                                              player={player} 
+                                              onClick={() => setSelectedPlayer(player)}
+                                              isStarter={true}
+                                              sport="nfl"
+                                            />
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
                                     
-                                    {showNFLDepth && (
-                                      <div className="mt-3 space-y-1 opacity-75">
-                                        {depthPlayers.map((player, i) => (
-                                          <RosterRow 
-                                            key={player.id || i} 
-                                            player={player} 
-                                            onClick={() => setSelectedPlayer(player)}
-                                            isStarter={false}
-                                            sport="nfl"
-                                          />
-                                        ))}
+                                    {/* Depth / Backups - Collapsed */}
+                                    {depthPlayers.length > 0 && (
+                                      <div className="mb-6 border-t border-gray-800 pt-4">
+                                        <button
+                                          className="w-full flex items-center justify-between py-2 text-left"
+                                          onClick={() => setShowNFLDepth(!showNFLDepth)}
+                                        >
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Depth / Rotation</span>
+                                            <span className="text-[10px] text-gray-600 bg-white/5 px-2 py-0.5 rounded-full">{depthPlayers.length}</span>
+                                          </div>
+                                          <svg 
+                                            className={`w-4 h-4 text-gray-500 transition-transform ${showNFLDepth ? 'rotate-180' : ''}`} 
+                                            fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                                          >
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                          </svg>
+                                        </button>
+                                        
+                                        {showNFLDepth && (
+                                          <div className="mt-3 space-y-1 opacity-75">
+                                            {depthPlayers.map((player, i) => (
+                                              <RosterRow 
+                                                key={player.id || i} 
+                                                player={player} 
+                                                onClick={() => setSelectedPlayer(player)}
+                                                isStarter={false}
+                                                sport="nfl"
+                                              />
+                                            ))}
+                                          </div>
+                                        )}
                                       </div>
                                     )}
-                                  </div>
+                                  </>
                                 )}
                                 
                                 {/* Injured / Out - Collapsed */}
@@ -2734,11 +3456,22 @@ export default function GamenightApp() {
                           {/* ============ MLB ROSTER ============ */}
                           {/* Game-Day Focused Hierarchy: Starting Pitcher → Batting Lineup → Other Players */}
                           {activeSport === 'mlb' && (() => {
-                            // Separate all players into categories
-                            const allPitchers = teamDetails.roster.filter(p => ['SP', 'RP', 'CL', 'P'].includes(p.position));
-                            const startingPitchers = allPitchers.filter(p => p.position === 'SP');
-                            const bullpen = allPitchers.filter(p => ['RP', 'CL', 'P'].includes(p.position));
-                            const positionPlayers = teamDetails.roster.filter(p => !['SP', 'RP', 'CL', 'P'].includes(p.position));
+                            // Guard: Check for valid roster array
+                            const roster = teamDetails.roster || [];
+                            if (roster.length === 0) {
+                              return (
+                                <div className="text-center py-8 bg-white/[0.02] rounded-2xl border border-white/5">
+                                  <div className="text-sm text-gray-400">No roster data available</div>
+                                  <div className="text-xs text-gray-600 mt-1">Check back later for updates</div>
+                                </div>
+                              );
+                            }
+                            
+                            // Separate all players into categories with null checks
+                            const allPitchers = roster.filter(p => p && ['SP', 'RP', 'CL', 'P'].includes(p.position));
+                            const startingPitchers = allPitchers.filter(p => p && p.position === 'SP');
+                            const bullpen = allPitchers.filter(p => p && ['RP', 'CL', 'P'].includes(p.position));
+                            const positionPlayers = roster.filter(p => p && !['SP', 'RP', 'CL', 'P'].includes(p.position));
                             
                             // Find today's starting pitcher from probableStarter data
                             const todayStarter = teamDetails.probableStarter;
@@ -2869,49 +3602,58 @@ export default function GamenightApp() {
                                     <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">Projected</span>
                                   </div>
                                   
-                                  <div className="space-y-1">
-                                    {probableLineup.map((player, i) => (
-                                      <div
-                                        key={player.id || i}
-                                        className="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 cursor-pointer transition-colors group"
-                                        onClick={() => setSelectedPlayer(player)}
-                                      >
-                                        {/* Batting Order Number */}
-                                        <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                                          <span className="text-xs font-bold text-emerald-400">{i + 1}</span>
-                                        </div>
-                                        
-                                        {/* Player Photo */}
-                                        {player.headshot ? (
-                                          <img src={player.headshot} alt="" className="w-10 h-10 rounded-full object-cover bg-gray-800" />
-                                        ) : (
-                                          <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-gray-500 text-sm font-bold">
-                                            {player.name?.charAt(0)}
-                                          </div>
-                                        )}
-                                        
-                                        {/* Player Info */}
-                                        <div className="flex-1 min-w-0">
-                                          <div className="font-medium text-white truncate">{player.name}</div>
-                                          <div className="text-xs text-gray-500">
-                                            {player.position} {player.jersey && `#${player.jersey}`}
-                                          </div>
-                                        </div>
-                                        
-                                        {/* Arrow */}
-                                        <svg className="w-4 h-4 text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                                        </svg>
-                                      </div>
-                                    ))}
-                                  </div>
-                                  
-                                  {probableLineup.length < 9 && (
-                                    <div className="mt-2 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-                                      <div className="text-xs text-yellow-400">
-                                        ⚠️ Lineup incomplete ({probableLineup.length}/9 positions filled)
-                                      </div>
+                                  {probableLineup.length === 0 ? (
+                                    <div className="text-center py-6 bg-white/[0.02] rounded-xl border border-white/5">
+                                      <div className="text-sm text-gray-500">Lineup data unavailable</div>
+                                      <div className="text-xs text-gray-600 mt-1">Check back closer to game time</div>
                                     </div>
+                                  ) : (
+                                    <>
+                                      <div className="space-y-1">
+                                        {probableLineup.map((player, i) => (
+                                          <div
+                                            key={player.id || i}
+                                            className="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 cursor-pointer transition-colors group"
+                                            onClick={() => setSelectedPlayer(player)}
+                                          >
+                                            {/* Batting Order Number */}
+                                            <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center">
+                                              <span className="text-xs font-bold text-emerald-400">{i + 1}</span>
+                                            </div>
+                                            
+                                            {/* Player Photo */}
+                                            {player.headshot ? (
+                                              <img src={player.headshot} alt="" className="w-10 h-10 rounded-full object-cover bg-gray-800" />
+                                            ) : (
+                                              <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-gray-500 text-sm font-bold">
+                                                {player.name?.charAt(0) || '?'}
+                                              </div>
+                                            )}
+                                            
+                                            {/* Player Info */}
+                                            <div className="flex-1 min-w-0">
+                                              <div className="font-medium text-white truncate">{player.name || 'Unknown'}</div>
+                                              <div className="text-xs text-gray-500">
+                                                {player.position || 'POS'} {player.jersey && `#${player.jersey}`}
+                                              </div>
+                                            </div>
+                                            
+                                            {/* Arrow */}
+                                            <svg className="w-4 h-4 text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                            </svg>
+                                          </div>
+                                        ))}
+                                      </div>
+                                      
+                                      {probableLineup.length < 9 && probableLineup.length > 0 && (
+                                        <div className="mt-2 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+                                          <div className="text-xs text-yellow-400">
+                                            ⚠️ Lineup incomplete ({probableLineup.length}/9 positions filled)
+                                          </div>
+                                        </div>
+                                      )}
+                                    </>
                                   )}
                                 </div>
                                 
