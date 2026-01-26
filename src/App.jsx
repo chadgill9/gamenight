@@ -967,67 +967,98 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
     totalScore = stakes.score + starPower.score + competitiveness.score + narrative.score + accessibility.score;
   }
   
-  // Build "Why Watch" text - DEDUPLICATE supporting reasons
-  const rawReasons = [];
-  if (starPower.matchupType !== 'none' && starPower.reason) rawReasons.push({ text: starPower.reason, source: 'starPower' });
-  if (stakes.score >= 15) rawReasons.push({ text: stakes.reason, source: 'stakes' });
-  if (competitiveness.score >= 16) rawReasons.push({ text: competitiveness.reason, source: 'competitiveness' });
-  if (narrative.score >= 10) rawReasons.push({ text: narrative.reason, source: 'narrative' });
-  if (accessibility.score >= 7) rawReasons.push({ text: accessibility.reason, source: 'accessibility' });
+  // Build "Why Watch" text
+  // RULE: Player names shown in matchup card should NOT be repeated in whyWatch
+  // - 'vs' matchup: Use abstract descriptions (names shown in card)
+  // - 'featured' matchup: Can mention player (only appears once)
+  // - 'none': Use team-based descriptions
   
-  // Deduplicate: remove reasons that are too similar or redundant
-  const seenPhrases = new Set();
-  const supportingReasons = rawReasons.filter(({ text }) => {
-    if (!text) return false;
-    // Normalize for comparison (lowercase, remove punctuation)
-    const normalized = text.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
-    // Skip if we've seen something very similar
-    for (const seen of seenPhrases) {
-      if (normalized.includes(seen) || seen.includes(normalized)) return false;
-      // Check for key phrase overlap
-      const words = normalized.split(' ').filter(w => w.length > 4);
-      const seenWords = seen.split(' ').filter(w => w.length > 4);
-      const overlap = words.filter(w => seenWords.includes(w)).length;
-      if (overlap >= 2) return false;
+  const hasStarMatchup = starPower.matchupType === 'vs';
+  const hasFeaturedPlayer = starPower.matchupType === 'featured';
+  
+  // Collect non-player reasons (stakes, competitiveness, narrative, accessibility)
+  const contextReasons = [];
+  if (stakes.score >= 15) contextReasons.push(stakes.reason);
+  if (competitiveness.score >= 16) contextReasons.push(competitiveness.reason);
+  if (narrative.score >= 10) contextReasons.push(narrative.reason);
+  if (accessibility.score >= 7) contextReasons.push(accessibility.reason);
+  
+  // Abstract descriptions for vs matchups (no player names)
+  const getAbstractMatchupPhrase = (label, score) => {
+    // Sport-specific abstract phrases based on matchup label
+    if (label === 'QB Matchup') {
+      if (score >= 18) return 'Elite quarterback showdown tonight';
+      return 'Two quality signal-callers face off';
     }
-    seenPhrases.add(normalized);
-    return true;
-  }).map(r => r.text);
+    if (label === 'Starting Pitchers') {
+      if (score >= 18) return 'Premium pitching duel on the mound';
+      return 'Quality arms take the mound tonight';
+    }
+    if (label === 'Star Batters') {
+      if (score >= 14) return 'Offensive firepower on both sides';
+      return 'Star-studded lineups clash tonight';
+    }
+    if (label === 'Star Matchup') {
+      if (score >= 18) return 'Superstar showdown headlines tonight';
+      return 'Top talent on display from both teams';
+    }
+    if (label === 'Key Matchup') {
+      if (score >= 15) return 'Marquee matchup between key playmakers';
+      return 'Impact players headline this contest';
+    }
+    // Default
+    return 'Compelling matchup between two quality squads';
+  };
   
-  // Primary reason is the highest-scoring component
-  const components = [
-    { name: 'stakes', score: stakes.score, reason: stakes.reason },
-    { name: 'starPower', score: starPower.score, reason: starPower.reason },
-    { name: 'competitiveness', score: competitiveness.score, reason: competitiveness.reason },
-    { name: 'narrative', score: narrative.score, reason: narrative.reason }
-  ].sort((a, b) => b.score - a.score);
-  
-  const primaryReason = components[0].reason;
-  
-  // Build whyWatch text - USE PROPER MATCHUP TEXT (never same-team "vs")
+  // Build whyWatch based on matchup type
   let whyWatch;
-  if (validation.fallbackMode) {
-    // Use matchupText which is already validated for cross-team matchups
-    whyWatch = starPower.matchupType === 'vs'
-      ? `${starPower.matchupText} headline this compelling matchup.`
-      : starPower.matchupType === 'featured'
-        ? `${starPower.matchupText} in tonight's action.`
-        : `${awayTeam.name} visits ${homeTeam.name} in tonight's action.`;
-  } else {
-    if (totalScore >= 70) {
-      // Get second reason that's different from primary
-      const secondReason = supportingReasons.find(r => r !== primaryReason) || '';
-      whyWatch = secondReason ? `${primaryReason}. ${secondReason}.` : `${primaryReason}.`;
-    } else if (totalScore >= 55) {
-      const secondReason = supportingReasons.find(r => r !== primaryReason) || 'Solid viewing option';
-      whyWatch = `${primaryReason}. ${secondReason}.`;
+  
+  if (hasStarMatchup) {
+    // VS MATCHUP: Names shown in card, use abstract description here
+    const abstractPhrase = getAbstractMatchupPhrase(starPower.matchupLabel, starPower.score);
+    
+    if (contextReasons.length > 0) {
+      // Add context (stakes, rivalry, etc.) - no player names
+      whyWatch = `${abstractPhrase}. ${contextReasons[0]}.`;
     } else {
-      whyWatch = `${awayTeam.name} at ${homeTeam.name}. ${primaryReason}.`;
+      whyWatch = `${abstractPhrase}.`;
+    }
+  } else if (hasFeaturedPlayer) {
+    // FEATURED PLAYER: Name shown in card, use abstract description here too
+    // (avoids duplication since card shows "Featured Player: [Name]")
+    const getAbstractFeaturedPhrase = (label) => {
+      if (label === 'Featured QB') return 'One of the game\'s elite quarterbacks takes the field';
+      if (label === 'Starting Pitcher') return 'A quality arm takes the mound tonight';
+      if (label === 'Featured Batter') return 'One of baseball\'s most dangerous hitters in action';
+      if (label === 'Featured Player') return 'A star player headlines tonight\'s matchup';
+      return 'Notable talent on display tonight';
+    };
+    
+    const abstractPhrase = getAbstractFeaturedPhrase(starPower.matchupLabel);
+    
+    if (contextReasons.length > 0) {
+      whyWatch = `${abstractPhrase}. ${contextReasons[0]}.`;
+    } else {
+      whyWatch = `${abstractPhrase}.`;
+    }
+  } else {
+    // NO MATCHUP: Team-based description
+    if (contextReasons.length > 0) {
+      whyWatch = `${awayTeam.name} at ${homeTeam.name}. ${contextReasons[0]}.`;
+    } else if (validation.fallbackMode) {
+      whyWatch = `${awayTeam.name} visits ${homeTeam.name} tonight.`;
+    } else {
+      whyWatch = `${awayTeam.name} takes on ${homeTeam.name}.`;
     }
   }
   
   // Clean up whyWatch - remove double periods, trim
   whyWatch = whyWatch.replace(/\.+/g, '.').replace(/\.\s*\./g, '.').trim();
+  
+  // Supporting reasons for tags (skip first context reason if used in whyWatch)
+  const supportingReasons = (hasStarMatchup || hasFeaturedPlayer)
+    ? contextReasons.slice(1, 3) // Skip first (used in whyWatch)
+    : contextReasons.slice(0, 3);
   
   return {
     score: totalScore,
