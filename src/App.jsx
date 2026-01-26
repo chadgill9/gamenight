@@ -1,6 +1,47 @@
 import React, { useState, useEffect, useCallback } from 'react';
 
 // ============================================
+// GLOBAL STYLES (inject keyframes)
+// ============================================
+const globalStyles = `
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .animate-fadeIn {
+    animation: fadeIn 300ms ease forwards;
+  }
+  .animate-slideUp {
+    animation: slideUp 400ms ease forwards;
+  }
+  .skeleton {
+    background: linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.03) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+  }
+`;
+
+// Inject styles once
+if (typeof document !== 'undefined' && !document.getElementById('gn-styles')) {
+  const style = document.createElement('style');
+  style.id = 'gn-styles';
+  style.textContent = globalStyles;
+  document.head.appendChild(style);
+}
+
+// ============================================
 // CONFIG
 // ============================================
 const SUPABASE_URL = 'https://gusjdcmqpdyqikqxxnli.supabase.co';
@@ -977,7 +1018,49 @@ const useReducedMotion = () => {
 };
 
 // ============================================
-// Animated Button
+// Skeleton Loading Component
+// ============================================
+const Skeleton = ({ className = '', width, height, rounded = 'rounded-lg' }) => (
+  <div 
+    className={`skeleton ${rounded} ${className}`}
+    style={{ width: width || '100%', height: height || '20px' }}
+  />
+);
+
+// Card Skeleton for game cards
+const GameCardSkeleton = () => (
+  <div className="bg-white/[0.03] border border-white/5 rounded-3xl p-6 mb-4">
+    <div className="flex items-center justify-between mb-6">
+      <Skeleton width="120px" height="12px" rounded="rounded-full" />
+      <Skeleton width="40px" height="20px" rounded="rounded-full" />
+    </div>
+    <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center gap-3">
+        <Skeleton width="56px" height="56px" rounded="rounded-full" />
+        <div>
+          <Skeleton width="100px" height="16px" className="mb-2" />
+          <Skeleton width="40px" height="12px" />
+        </div>
+      </div>
+      <Skeleton width="20px" height="14px" />
+      <div className="flex items-center gap-3">
+        <div className="text-right">
+          <Skeleton width="100px" height="16px" className="mb-2" />
+          <Skeleton width="40px" height="12px" />
+        </div>
+        <Skeleton width="56px" height="56px" rounded="rounded-full" />
+      </div>
+    </div>
+    <Skeleton width="100%" height="16px" className="mb-4" />
+    <div className="flex gap-3">
+      <Skeleton width="100%" height="48px" rounded="rounded-2xl" />
+      <Skeleton width="100%" height="48px" rounded="rounded-2xl" />
+    </div>
+  </div>
+);
+
+// ============================================
+// Animated Button - Polished
 // ============================================
 const AnimatedButton = ({ children, primary, className, onClick, disabled }) => {
   const reducedMotion = useReducedMotion();
@@ -992,11 +1075,12 @@ const AnimatedButton = ({ children, primary, className, onClick, disabled }) => 
       onMouseLeave={() => setPressed(false)}
       onTouchStart={() => !disabled && setPressed(true)}
       onTouchEnd={() => setPressed(false)}
-      className={className}
+      className={`${className} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
       style={{
-        transform: !reducedMotion && pressed ? `scale(${primary ? 0.97 : 0.98})` : 'scale(1)',
-        opacity: pressed ? 0.9 : 1,
+        transform: !reducedMotion && pressed && !disabled ? `scale(${primary ? 0.97 : 0.98})` : 'scale(1)',
+        opacity: disabled ? 0.5 : (pressed ? 0.9 : 1),
         transition: reducedMotion ? 'none' : 'transform 150ms ease, opacity 150ms ease',
+        WebkitTapHighlightColor: 'transparent',
       }}
     >
       {children}
@@ -1296,10 +1380,11 @@ export default function GamenightApp() {
 
   return (
     <div 
-      className="text-white min-h-screen pb-24"
+      className="text-white min-h-screen"
       style={{
         fontFamily: "'Space Grotesk', sans-serif",
         background: '#0a0a0f',
+        paddingBottom: 'calc(100px + env(safe-area-inset-bottom, 0px))',
         opacity: reducedMotion ? 1 : (appLoaded ? 1 : 0),
         transition: reducedMotion ? 'none' : 'opacity 300ms ease',
       }}
@@ -1346,23 +1431,45 @@ export default function GamenightApp() {
         
         {/* Loading State */}
         {loading && (
-          <div className="flex flex-col items-center justify-center py-20">
-            <div className="text-orange-500 mb-4"><Icons.Loader /></div>
-            <p className="text-gray-400 mb-4">Loading live games...</p>
+          <div className="animate-fadeIn">
+            {/* Skeleton loading - feels more premium than spinner */}
+            <div className="flex gap-2 p-1 bg-white/[0.02] rounded-3xl border border-white/5 mb-6">
+              {['nba', 'nfl', 'mlb'].map(s => (
+                <div key={s} className="flex-1 py-3.5 rounded-2xl">
+                  <Skeleton width="100%" height="20px" rounded="rounded-2xl" />
+                </div>
+              ))}
+            </div>
+            <GameCardSkeleton />
+            <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-3">Also Tonight</div>
+            <div className="space-y-2">
+              {[1, 2, 3].map(i => (
+                <div key={i} className="bg-white/[0.03] border border-white/5 rounded-2xl p-4">
+                  <div className="flex items-center gap-3">
+                    <Skeleton width="32px" height="32px" rounded="rounded-full" />
+                    <Skeleton width="12px" height="12px" rounded="rounded-full" />
+                    <Skeleton width="32px" height="32px" rounded="rounded-full" />
+                    <div className="flex-1" />
+                    <Skeleton width="60px" height="16px" />
+                  </div>
+                </div>
+              ))}
+            </div>
+            
+            {/* Timeout retry option */}
             {loadingTimeout && (
-              <div className="text-center">
+              <div className="text-center mt-8 animate-fadeIn">
                 <p className="text-yellow-400 text-sm mb-3">Taking longer than expected...</p>
                 <button
                   onClick={() => {
                     setLoading(true);
                     setLoadingTimeout(false);
                     setLoadError(null);
-                    // Force re-trigger by toggling sport
                     const currentSport = activeSport;
                     setActiveSport(currentSport === 'nba' ? 'nfl' : 'nba');
                     setTimeout(() => setActiveSport(currentSport), 100);
                   }}
-                  className="px-5 py-2 bg-white/10 hover:bg-white/15 rounded-full text-sm font-medium transition-colors"
+                  className="px-5 py-2.5 bg-white/10 hover:bg-white/15 rounded-full text-sm font-medium transition-colors"
                 >
                   Try Again
                 </button>
@@ -1373,7 +1480,7 @@ export default function GamenightApp() {
 
         {/* Tonight Tab */}
         {!loading && activeTab === 'tonight' && (
-          <div>
+          <div className="animate-fadeIn">
             {/* Sport Pills */}
             <div className="flex gap-2 p-1 bg-white/[0.02] rounded-3xl border border-white/5 mb-6">
               {['nba', 'nfl', 'mlb'].map(s => (
@@ -1533,17 +1640,18 @@ export default function GamenightApp() {
                 )}
               </>
             ) : (
-              <div className="text-center py-16">
-                <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-5 text-gray-500"><Icons.Calendar /></div>
+              <div className="text-center py-16 animate-fadeIn">
+                <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-5 text-gray-500">
+                  <Icons.Calendar />
+                </div>
                 <div className="text-lg font-bold mb-2">No {activeSport.toUpperCase()} Games Today</div>
-                <div className="text-sm text-gray-400 mb-4">Check back tomorrow or switch sports.</div>
+                <div className="text-sm text-gray-500 mb-6 max-w-[260px] mx-auto">Check back tomorrow or switch to another sport to find tonight's action.</div>
                 
                 {/* Retry Button */}
                 <button
                   onClick={() => {
                     setLoading(true);
                     setLoadError(null);
-                    // Trigger reload
                     api.getGames(activeSport).then(res => {
                       if (!res.error) setGames(res.games || []);
                       else setLoadError(res.error);
@@ -1553,15 +1661,15 @@ export default function GamenightApp() {
                       setLoading(false);
                     });
                   }}
-                  className="px-5 py-2 bg-white/10 hover:bg-white/15 rounded-full text-sm font-medium transition-colors mb-4"
+                  className="px-6 py-2.5 bg-white/10 hover:bg-white/15 rounded-full text-sm font-medium transition-colors"
                 >
                   Refresh
                 </button>
                 
                 {loadError && (
-                  <div className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2 mt-2 max-w-xs mx-auto">
+                  <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 mt-6 max-w-xs mx-auto">
                     {loadError.includes('fetch') || loadError.includes('network') 
-                      ? '📡 Network error - check your connection' 
+                      ? '📡 Network error — check your connection' 
                       : `⚠️ ${loadError}`}
                   </div>
                 )}
@@ -1572,7 +1680,7 @@ export default function GamenightApp() {
 
         {/* Challenge Tab */}
         {!loading && activeTab === 'challenge' && (
-          <div>
+          <div className="animate-fadeIn">
             {challenge ? (
               <div className={`bg-gradient-to-b ${challenge.gameFinished ? 'from-emerald-500/10 to-emerald-500/[0.03] border-emerald-500/20' : challenge.gameStarted ? 'from-amber-500/10 to-amber-500/[0.03] border-amber-500/20' : 'from-orange-500/10 to-orange-500/[0.03] border-orange-500/20'} border rounded-3xl p-6 mb-6`}>
                 <div className="flex justify-between items-center mb-5">
@@ -1586,7 +1694,7 @@ export default function GamenightApp() {
                 </div>
                 
                 <div className="text-2xl font-extrabold mb-1">{challenge.question}</div>
-                <div className="text-sm text-gray-400 mb-4">{challenge.game?.awayTeam?.name} @ {challenge.game?.homeTeam?.name}</div>
+                <div className="text-sm text-gray-500 mb-4">{challenge.game?.awayTeam?.name} @ {challenge.game?.homeTeam?.name}</div>
                 
                 {/* Show score if game started */}
                 {(challenge.gameStarted || challenge.gameFinished) && challenge.homeScore !== null && (
@@ -1696,10 +1804,12 @@ export default function GamenightApp() {
                 )}
               </div>
             ) : (
-              <div className="text-center py-16">
-                <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-5 text-gray-500"><Icons.Target /></div>
+              <div className="text-center py-16 animate-fadeIn">
+                <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-5 text-gray-500">
+                  <Icons.Target />
+                </div>
                 <div className="text-lg font-bold mb-2">No Challenge Today</div>
-                <div className="text-sm text-gray-400">Check back when there are games scheduled.</div>
+                <div className="text-sm text-gray-500 max-w-[260px] mx-auto">Check back when games are scheduled to make your prediction.</div>
               </div>
             )}
 
@@ -1723,92 +1833,200 @@ export default function GamenightApp() {
 
         {/* Profile Tab */}
         {!loading && activeTab === 'profile' && (
-          <div>
+          <div className="animate-fadeIn">
+            {/* Profile Header */}
             <div className="text-center py-8">
-              <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4 ${settings.premium ? 'bg-gradient-to-br from-yellow-400 to-amber-500 text-black' : 'bg-white/10 border-2 border-white/10 text-gray-500'}`}>
+              <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4 ${settings.premium ? 'bg-gradient-to-br from-yellow-400 to-amber-500 text-black shadow-lg shadow-amber-500/30' : 'bg-white/10 border-2 border-white/10 text-gray-500'}`}>
                 {settings.premium ? <Icons.Crown /> : <Icons.User />}
               </div>
               <div className="text-2xl font-extrabold mb-1">Guest</div>
-              <div className="text-sm text-gray-400">{settings.premium ? 'Premium Member' : 'Free Account'}</div>
+              <div className="text-sm text-gray-500">{settings.premium ? 'Premium Member' : 'Free Account'}</div>
             </div>
 
-            <div className="flex gap-3 mb-6">
-              {[['Points', userStats.points], ['Streak', userStats.streak], ['Accuracy', `${userStats.accuracy || 0}%`]].map(([l, v]) => (
-                <div key={l} className="flex-1 bg-white/[0.03] border border-white/5 rounded-2xl p-5 text-center">
-                  <div className="text-2xl font-extrabold mb-1">{v}</div>
-                  <div className="text-[10px] text-gray-500 uppercase">{l}</div>
+            {/* Stats Cards */}
+            <div className="flex gap-3 mb-8">
+              {[
+                ['Points', userStats.points, 'text-white'],
+                ['Streak', userStats.streak, 'text-orange-400'],
+                ['Accuracy', `${userStats.accuracy || 0}%`, 'text-emerald-400']
+              ].map(([label, value, color]) => (
+                <div key={label} className="flex-1 bg-white/[0.03] border border-white/5 rounded-2xl p-5 text-center">
+                  <div className={`text-2xl font-extrabold mb-1 ${color}`}>{value}</div>
+                  <div className="text-[11px] text-gray-500 uppercase tracking-wide">{label}</div>
                 </div>
               ))}
             </div>
 
+            {/* Premium Upgrade */}
             {!settings.premium && (
-              <AnimatedButton primary onClick={() => setShowPaywall(true)} className="w-full py-4 bg-gradient-to-r from-yellow-400 to-amber-500 text-black rounded-2xl font-bold flex items-center justify-center gap-2.5 mb-6 hover:shadow-lg hover:shadow-amber-500/30 transition-shadow">
+              <AnimatedButton 
+                primary 
+                onClick={() => setShowPaywall(true)} 
+                className="w-full py-4 bg-gradient-to-r from-yellow-400 to-amber-500 text-black rounded-2xl font-bold flex items-center justify-center gap-2.5 mb-8 hover:shadow-lg hover:shadow-amber-500/30 transition-shadow"
+              >
                 <Icons.Crown /> Upgrade to Premium
               </AnimatedButton>
             )}
 
-            <div className="text-center text-xs text-gray-500 py-6">Gamenight v1.0 • Live ESPN Data</div>
+            {/* App Info */}
+            <div className="text-center py-6 border-t border-white/5">
+              <div className="text-sm text-gray-500 mb-1">Gamenight v1.0</div>
+              <div className="text-xs text-gray-600">Live data powered by ESPN</div>
+            </div>
           </div>
         )}
 
-        {/* Settings Tab */}
+        {/* Settings Tab - Clean & Organized */}
         {!loading && activeTab === 'settings' && (
-          <div>
-            <div className="mb-6">
+          <div className="animate-fadeIn">
+            <div className="mb-8">
               <h1 className="text-2xl font-extrabold mb-1">Settings</h1>
-              <p className="text-sm text-gray-400">Customize your experience</p>
+              <p className="text-sm text-gray-500">Customize your experience</p>
             </div>
 
-            <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-3">Features</div>
-            {[['bettingSignals', 'Betting Signals', 'Show betting odds and sharp money indicators', Icons.BarChart], ['notifications', 'Push Notifications', 'Get alerts when games start', Icons.Bell], ['emailAlerts', 'Email Alerts', 'Daily best game recommendations', Icons.Mail]].map(([k, label, desc, Icon]) => (
-              <div 
-                key={k} 
-                onClick={() => toggleSetting(k)} 
-                className="flex items-center justify-between p-4 bg-white/[0.02] rounded-2xl mb-2 cursor-pointer hover:bg-white/[0.04] transition-colors"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="text-gray-400"><Icon /></div>
-                  <div>
-                    <div className="text-white font-medium">{label}</div>
-                    <div className="text-xs text-gray-500">{desc}</div>
+            {/* Preferences Section */}
+            <div className="mb-6">
+              <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3 px-1">Preferences</div>
+              <div className="bg-white/[0.02] rounded-2xl border border-white/5 overflow-hidden">
+                {[
+                  ['bettingSignals', 'Betting Signals', 'Show odds and line movement', Icons.BarChart],
+                ].map(([k, label, desc, Icon], idx, arr) => (
+                  <div 
+                    key={k} 
+                    onClick={() => toggleSetting(k)} 
+                    className={`flex items-center justify-between p-4 cursor-pointer hover:bg-white/[0.02] transition-colors active:bg-white/[0.04] ${idx < arr.length - 1 ? 'border-b border-white/5' : ''}`}
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <div className="w-9 h-9 bg-white/5 rounded-xl flex items-center justify-center text-gray-400"><Icon /></div>
+                      <div>
+                        <div className="text-[15px] text-white font-medium">{label}</div>
+                        <div className="text-[13px] text-gray-500">{desc}</div>
+                      </div>
+                    </div>
+                    <div 
+                      className={`w-[52px] h-[32px] rounded-full relative transition-colors duration-200 ${settings[k] ? 'bg-orange-500' : 'bg-white/10'}`}
+                    >
+                      <div 
+                        className="absolute top-[4px] w-[24px] h-[24px] bg-white rounded-full shadow-md transition-all duration-200" 
+                        style={{ left: settings[k] ? '24px' : '4px' }} 
+                      />
+                    </div>
                   </div>
-                </div>
-                <div className={`w-12 h-7 rounded-full relative transition-colors ${settings[k] ? 'bg-orange-500' : 'bg-white/10'}`}>
-                  <div className="absolute top-1 w-5 h-5 bg-white rounded-full shadow-sm transition-all" style={{ left: settings[k] ? '24px' : '4px' }} />
-                </div>
+                ))}
               </div>
-            ))}
+            </div>
 
-            <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-3 mt-6">Support</div>
-            {[['Help Center', 'Get help with the app', Icons.HelpCircle], ['Privacy Policy', 'How we handle your data', Icons.Shield], ['Terms of Service', 'Rules and guidelines', Icons.FileText]].map(([label, desc, Icon]) => (
-              <div key={label} className="flex items-center justify-between p-4 bg-white/[0.02] rounded-2xl mb-2 cursor-pointer hover:bg-white/[0.04] transition-colors">
-                <div className="flex items-center gap-3.5">
-                  <div className="text-gray-400"><Icon /></div>
-                  <div>
-                    <div className="text-white font-medium">{label}</div>
-                    <div className="text-xs text-gray-500">{desc}</div>
+            {/* Notifications Section */}
+            <div className="mb-6">
+              <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3 px-1">Notifications</div>
+              <div className="bg-white/[0.02] rounded-2xl border border-white/5 overflow-hidden">
+                {[
+                  ['notifications', 'Push Notifications', 'Alerts when games start', Icons.Bell],
+                  ['emailAlerts', 'Email Digest', 'Daily recommendations', Icons.Mail],
+                ].map(([k, label, desc, Icon], idx, arr) => (
+                  <div 
+                    key={k} 
+                    onClick={() => toggleSetting(k)} 
+                    className={`flex items-center justify-between p-4 cursor-pointer hover:bg-white/[0.02] transition-colors active:bg-white/[0.04] ${idx < arr.length - 1 ? 'border-b border-white/5' : ''}`}
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <div className="w-9 h-9 bg-white/5 rounded-xl flex items-center justify-center text-gray-400"><Icon /></div>
+                      <div>
+                        <div className="text-[15px] text-white font-medium">{label}</div>
+                        <div className="text-[13px] text-gray-500">{desc}</div>
+                      </div>
+                    </div>
+                    <div 
+                      className={`w-[52px] h-[32px] rounded-full relative transition-colors duration-200 ${settings[k] ? 'bg-orange-500' : 'bg-white/10'}`}
+                    >
+                      <div 
+                        className="absolute top-[4px] w-[24px] h-[24px] bg-white rounded-full shadow-md transition-all duration-200" 
+                        style={{ left: settings[k] ? '24px' : '4px' }} 
+                      />
+                    </div>
                   </div>
-                </div>
-                <Icons.ChevronRight />
+                ))}
               </div>
-            ))}
+            </div>
 
-            <div className="text-center text-xs text-gray-500 py-6">Gamenight v1.0 • Data from ESPN</div>
+            {/* Support Section */}
+            <div className="mb-6">
+              <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3 px-1">Support</div>
+              <div className="bg-white/[0.02] rounded-2xl border border-white/5 overflow-hidden">
+                {[
+                  ['Help Center', 'Get help with the app', Icons.HelpCircle],
+                  ['Contact Us', 'Send feedback or report issues', Icons.Mail],
+                ].map(([label, desc, Icon], idx, arr) => (
+                  <div 
+                    key={label} 
+                    className={`flex items-center justify-between p-4 cursor-pointer hover:bg-white/[0.02] transition-colors active:bg-white/[0.04] ${idx < arr.length - 1 ? 'border-b border-white/5' : ''}`}
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <div className="w-9 h-9 bg-white/5 rounded-xl flex items-center justify-center text-gray-400"><Icon /></div>
+                      <div>
+                        <div className="text-[15px] text-white font-medium">{label}</div>
+                        <div className="text-[13px] text-gray-500">{desc}</div>
+                      </div>
+                    </div>
+                    <div className="text-gray-600"><Icons.ChevronRight /></div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Legal Section */}
+            <div className="mb-6">
+              <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3 px-1">Legal</div>
+              <div className="bg-white/[0.02] rounded-2xl border border-white/5 overflow-hidden">
+                {[
+                  ['Privacy Policy', Icons.Shield],
+                  ['Terms of Service', Icons.FileText],
+                ].map(([label, Icon], idx, arr) => (
+                  <div 
+                    key={label} 
+                    className={`flex items-center justify-between p-4 cursor-pointer hover:bg-white/[0.02] transition-colors active:bg-white/[0.04] ${idx < arr.length - 1 ? 'border-b border-white/5' : ''}`}
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <div className="w-9 h-9 bg-white/5 rounded-xl flex items-center justify-center text-gray-400"><Icon /></div>
+                      <div className="text-[15px] text-white font-medium">{label}</div>
+                    </div>
+                    <div className="text-gray-600"><Icons.ChevronRight /></div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* App Info */}
+            <div className="text-center py-6">
+              <div className="text-sm text-gray-500 mb-1">Gamenight v1.0</div>
+              <div className="text-xs text-gray-600">Live data powered by ESPN</div>
+            </div>
           </div>
         )}
       </main>
 
-      {/* Tab Bar */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-[#0a0a0f]/90 backdrop-blur-xl border-t border-white/5 flex justify-center gap-2 px-5 pt-3 pb-8 z-50">
-        {[['tonight', 'Tonight', Icons.Home], ['challenge', 'Challenge', Icons.Target], ['profile', 'Profile', Icons.User]].map(([tab, label, Icon]) => (
-          <AnimatedButton 
-            key={tab} 
-            onClick={() => setActiveTab(tab)} 
-            className={`flex flex-col items-center gap-1.5 px-7 py-2.5 rounded-3xl transition-colors ${activeTab === tab ? 'text-white bg-white/10' : 'text-gray-500'}`}
-          >
-            <Icon /><span className="text-[11px] font-semibold">{label}</span>
-          </AnimatedButton>
-        ))}
+      {/* Tab Bar - Safe area aware */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-[#0a0a0f]/95 backdrop-blur-xl border-t border-white/5 z-50" style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 20px), 20px)' }}>
+        <div className="flex justify-center gap-2 px-4 pt-3 max-w-md mx-auto">
+          {[
+            ['tonight', 'Tonight', Icons.Home],
+            ['challenge', 'Challenge', Icons.Target],
+            ['profile', 'Profile', Icons.User]
+          ].map(([tab, label, Icon]) => (
+            <AnimatedButton 
+              key={tab} 
+              onClick={() => setActiveTab(tab)} 
+              className={`flex flex-col items-center gap-1 px-6 py-2.5 rounded-2xl transition-all min-w-[80px] ${
+                activeTab === tab 
+                  ? 'text-white bg-white/10' 
+                  : 'text-gray-500 hover:text-gray-400'
+              }`}
+            >
+              <Icon />
+              <span className="text-[11px] font-semibold">{label}</span>
+            </AnimatedButton>
+          ))}
+        </div>
       </nav>
 
       {/* Team Modal - ESPN-Style Design */}
@@ -1903,19 +2121,25 @@ export default function GamenightApp() {
               {/* Loading State */}
               {teamLoading && (
                 <div className="p-5 space-y-4">
-                  <div className="h-32 bg-white/[0.03] rounded-xl animate-pulse" />
-                  <div className="h-32 bg-white/[0.03] rounded-xl animate-pulse" />
-                  <div className="h-48 bg-white/[0.03] rounded-xl animate-pulse" />
+                  {/* Stats skeleton */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="skeleton h-24 rounded-2xl" />
+                    <div className="skeleton h-24 rounded-2xl" />
+                  </div>
+                  <div className="skeleton h-32 rounded-2xl" />
+                  <div className="skeleton h-20 rounded-2xl" />
+                  <div className="skeleton h-48 rounded-2xl" />
                 </div>
               )}
 
               {/* Error State */}
               {!teamLoading && teamError && (
-                <div className="text-center py-16 px-5">
+                <div className="text-center py-16 px-5 animate-fadeIn">
                   <div className="w-14 h-14 mx-auto mb-4 bg-white/5 rounded-full flex items-center justify-center text-gray-500">
                     <Icons.AlertCircle />
                   </div>
-                  <div className="text-gray-400 mb-4">Could not load team details</div>
+                  <div className="text-lg font-semibold mb-2">Couldn't Load Team</div>
+                  <div className="text-sm text-gray-500 mb-6">Something went wrong. Please try again.</div>
                   <AnimatedButton 
                     onClick={() => {
                       setTeamLoading(true);
@@ -1928,7 +2152,7 @@ export default function GamenightApp() {
                         })
                         .catch(err => { setTeamError(err.message); setTeamLoading(false); });
                     }}
-                    className="px-6 py-2.5 bg-blue-500 hover:bg-blue-600 rounded-full text-sm font-semibold transition-colors"
+                    className="px-6 py-2.5 bg-white/10 hover:bg-white/15 rounded-full text-sm font-semibold transition-colors"
                   >
                     Try Again
                   </AnimatedButton>
@@ -2050,20 +2274,26 @@ export default function GamenightApp() {
                     <div className="animate-fadeIn">
                       {/* Loading State */}
                       {teamLoading && (
-                        <div className="space-y-3">
-                          {[1,2,3,4,5].map(i => (
-                            <div key={i} className="h-16 bg-white/[0.03] rounded-xl animate-pulse" />
+                        <div className="space-y-2">
+                          {[1,2,3,4,5,6].map(i => (
+                            <div key={i} className="flex items-center gap-3 p-3">
+                              <div className="skeleton w-10 h-10 rounded-full" />
+                              <div className="flex-1">
+                                <div className="skeleton w-32 h-4 mb-2 rounded" />
+                                <div className="skeleton w-20 h-3 rounded" />
+                              </div>
+                            </div>
                           ))}
                         </div>
                       )}
                       
-                      {/* Error State */}
+                      {/* Empty State */}
                       {!teamLoading && (!teamDetails.roster || teamDetails.roster.length === 0) && (
                         <div className="text-center py-12 bg-white/[0.02] rounded-2xl border border-white/5">
-                          <div className="w-12 h-12 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-3">
+                          <div className="w-12 h-12 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-3 text-gray-500">
                             <Icons.User />
                           </div>
-                          <div className="text-sm text-gray-400 font-medium">Roster unavailable</div>
+                          <div className="text-sm text-gray-400 font-medium">Roster Unavailable</div>
                           <div className="text-xs text-gray-600 mt-1">Check back later</div>
                         </div>
                       )}
