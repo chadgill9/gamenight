@@ -1224,8 +1224,6 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
     reason: matchupText || 'No pitcher data available'
   };
 };
-  };
-};
 
 // ============================================
 // Shared Matchup Result Builder
