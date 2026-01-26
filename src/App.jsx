@@ -1430,7 +1430,7 @@ export default function GamenightApp() {
           </div>
           <div className="flex gap-2">
             <AnimatedButton 
-              onClick={() => setActiveTab('settings')} 
+              onClick={() => { setActiveTab('settings'); window.scrollTo(0, 0); }} 
               className={`w-11 h-11 rounded-2xl flex items-center justify-center border ${activeTab === 'settings' ? 'bg-white/10 border-white/20 text-white' : 'bg-white/5 border-white/10 text-gray-400'}`}
             >
               <Icons.Settings />
@@ -2039,7 +2039,7 @@ export default function GamenightApp() {
           ].map(([tab, label, Icon]) => (
             <AnimatedButton 
               key={tab} 
-              onClick={() => setActiveTab(tab)} 
+              onClick={() => { setActiveTab(tab); window.scrollTo(0, 0); }} 
               className={`flex flex-col items-center gap-1 px-6 py-2.5 rounded-2xl transition-all min-w-[80px] ${
                 activeTab === tab 
                   ? 'text-white bg-white/10' 
@@ -3125,8 +3125,8 @@ export default function GamenightApp() {
 
       {/* Notifications Modal */}
       {showNotifications && (
-        <div className="fixed inset-0 flex items-end justify-center z-[100]" style={{ backgroundColor: 'rgba(0,0,0,0.8)' }} onClick={() => setShowNotifications(false)}>
-          <div className="bg-[#0a0a0f] w-full max-w-md rounded-t-3xl" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 flex items-start justify-center z-[100] pt-20" style={{ backgroundColor: 'rgba(0,0,0,0.8)' }} onClick={() => setShowNotifications(false)}>
+          <div className="bg-[#0a0a0f] w-full max-w-md rounded-3xl mx-4 border border-white/10 animate-fadeIn" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-4 border-b border-white/5">
               <span className="text-lg font-bold">Notifications</span>
               <AnimatedButton onClick={() => setShowNotifications(false)} className="w-10 h-10 bg-white/5 rounded-xl flex items-center justify-center text-gray-400"><Icons.X /></AnimatedButton>
