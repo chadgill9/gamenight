@@ -413,6 +413,7 @@ const calculateStakesScore = (homeTeam, awayTeam, validation, sport = 'nba') => 
 };
 
 // 2. STAR POWER SCORE (0-20 pts) - Who's playing?
+// CRITICAL: Must NEVER produce same-team "vs" matchups
 const calculateStarPowerScore = (homeTeam, awayTeam, sport = 'nba') => {
   const homeStars = STAR_PLAYERS.TEAM_STARS[homeTeam.abbreviation] || [];
   const awayStars = STAR_PLAYERS.TEAM_STARS[awayTeam.abbreviation] || [];
@@ -420,6 +421,7 @@ const calculateStarPowerScore = (homeTeam, awayTeam, sport = 'nba') => {
   // Get sport-specific star tiers
   const { mvp, allStar } = getStarTiers(sport);
   
+  // Categorize by tier AND team - keep lists strictly separated
   const homeMVPs = homeStars.filter(s => mvp.includes(s));
   const awayMVPs = awayStars.filter(s => mvp.includes(s));
   const homeAllStars = homeStars.filter(s => allStar.includes(s));
@@ -429,38 +431,96 @@ const calculateStarPowerScore = (homeTeam, awayTeam, sport = 'nba') => {
   const totalAllStars = homeAllStars.length + awayAllStars.length;
   
   let score = 5;
-  let stars = [];
   
-  // 2+ MVP-caliber players
+  // Track stars by team for proper matchup display - NEVER MIX TEAMS
+  let homeStarList = [];
+  let awayStarList = [];
+  
+  // 2+ MVP-caliber players (could be both on same team or split)
   if (totalMVPs >= 2) {
     score = 20;
-    stars = [...homeMVPs, ...awayMVPs];
+    homeStarList = [...homeMVPs, ...homeAllStars];
+    awayStarList = [...awayMVPs, ...awayAllStars];
   }
   // 1 MVP + 1 All-Star
   else if (totalMVPs === 1 && totalAllStars >= 1) {
     score = 17;
-    stars = [...homeMVPs, ...homeAllStars.slice(0, 1), ...awayMVPs, ...awayAllStars.slice(0, 1)];
+    homeStarList = [...homeMVPs, ...homeAllStars];
+    awayStarList = [...awayMVPs, ...awayAllStars];
   }
   // 2+ All-Stars
   else if (totalAllStars >= 2) {
     score = 15;
-    stars = [...homeAllStars, ...awayAllStars].slice(0, 4);
+    homeStarList = homeAllStars;
+    awayStarList = awayAllStars;
   }
   // 1 MVP
   else if (totalMVPs === 1) {
     score = 13;
-    stars = [...homeMVPs, ...awayMVPs];
+    homeStarList = homeMVPs;
+    awayStarList = awayMVPs;
   }
   // 1-2 All-Stars
   else if (totalAllStars >= 1) {
     score = 10;
-    stars = [...homeAllStars, ...awayAllStars].slice(0, 2);
+    homeStarList = homeAllStars;
+    awayStarList = awayAllStars;
   }
+  
+  // Build proper matchup: MUST be one from each team
+  const bestHomeStar = homeStarList[0] || null;
+  const bestAwayStar = awayStarList[0] || null;
+  
+  // SAFETY CHECK: Verify stars are actually on different teams
+  // This guards against database errors where same player listed on multiple teams
+  const homeTeamAbbr = homeTeam.abbreviation;
+  const awayTeamAbbr = awayTeam.abbreviation;
+  
+  // Determine matchup type and build appropriate display
+  let matchupType = 'none'; // 'vs' | 'featured' | 'none'
+  let matchupText = '';
+  let allStars = [];
+  
+  if (bestHomeStar && bestAwayStar && homeTeamAbbr !== awayTeamAbbr) {
+    // VALID cross-team matchup - teams are different
+    matchupType = 'vs';
+    matchupText = `${bestAwayStar} vs ${bestHomeStar}`;
+    allStars = [bestAwayStar, bestHomeStar, ...awayStarList.slice(1), ...homeStarList.slice(1)];
+  } else if (bestHomeStar || bestAwayStar) {
+    // Only one team has stars - use "features" language, NEVER "vs"
+    matchupType = 'featured';
+    const teamWithStars = bestHomeStar ? homeStarList : awayStarList;
+    const teamName = bestHomeStar ? homeTeam.name : awayTeam.name;
+    
+    if (teamWithStars.length >= 2) {
+      // Show top 2 stars with "&" not "vs"
+      matchupText = `${teamName} stars: ${teamWithStars.slice(0, 2).join(' & ')}`;
+    } else {
+      matchupText = `Features ${teamWithStars[0]}`;
+    }
+    allStars = teamWithStars;
+  } else {
+    // No stars on either team
+    matchupType = 'none';
+    matchupText = '';
+    allStars = [];
+  }
+  
+  // Build reason text - use matchupText, fallback to generic
+  const reason = matchupType === 'vs' 
+    ? matchupText
+    : matchupType === 'featured'
+      ? matchupText
+      : 'No major stars';
   
   return { 
     score, 
-    stars: stars.slice(0, 4),
-    reason: stars.length > 0 ? `Features ${stars.slice(0, 2).join(' vs ')}` : 'No major stars'
+    stars: allStars.slice(0, 4),
+    homeStars: homeStarList.slice(0, 2),
+    awayStars: awayStarList.slice(0, 2),
+    matchupType,
+    matchupText,
+    reason
   };
 };
 
@@ -603,13 +663,32 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
     totalScore = stakes.score + starPower.score + competitiveness.score + narrative.score + accessibility.score;
   }
   
-  // Build "Why Watch" text
-  const supportingReasons = [];
-  if (starPower.stars.length > 0) supportingReasons.push(starPower.reason);
-  if (stakes.score >= 15) supportingReasons.push(stakes.reason);
-  if (competitiveness.score >= 16) supportingReasons.push(competitiveness.reason);
-  if (narrative.score >= 10) supportingReasons.push(narrative.reason);
-  if (accessibility.score >= 7) supportingReasons.push(accessibility.reason);
+  // Build "Why Watch" text - DEDUPLICATE supporting reasons
+  const rawReasons = [];
+  if (starPower.matchupType !== 'none' && starPower.reason) rawReasons.push({ text: starPower.reason, source: 'starPower' });
+  if (stakes.score >= 15) rawReasons.push({ text: stakes.reason, source: 'stakes' });
+  if (competitiveness.score >= 16) rawReasons.push({ text: competitiveness.reason, source: 'competitiveness' });
+  if (narrative.score >= 10) rawReasons.push({ text: narrative.reason, source: 'narrative' });
+  if (accessibility.score >= 7) rawReasons.push({ text: accessibility.reason, source: 'accessibility' });
+  
+  // Deduplicate: remove reasons that are too similar or redundant
+  const seenPhrases = new Set();
+  const supportingReasons = rawReasons.filter(({ text }) => {
+    if (!text) return false;
+    // Normalize for comparison (lowercase, remove punctuation)
+    const normalized = text.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+    // Skip if we've seen something very similar
+    for (const seen of seenPhrases) {
+      if (normalized.includes(seen) || seen.includes(normalized)) return false;
+      // Check for key phrase overlap
+      const words = normalized.split(' ').filter(w => w.length > 4);
+      const seenWords = seen.split(' ').filter(w => w.length > 4);
+      const overlap = words.filter(w => seenWords.includes(w)).length;
+      if (overlap >= 2) return false;
+    }
+    seenPhrases.add(normalized);
+    return true;
+  }).map(r => r.text);
   
   // Primary reason is the highest-scoring component
   const components = [
@@ -621,21 +700,30 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
   
   const primaryReason = components[0].reason;
   
-  // Build whyWatch text (avoid standings language in fallback)
+  // Build whyWatch text - USE PROPER MATCHUP TEXT (never same-team "vs")
   let whyWatch;
   if (validation.fallbackMode) {
-    whyWatch = starPower.stars.length > 0 
-      ? `${starPower.stars.slice(0, 2).join(' vs ')} headline this compelling matchup.`
-      : `${awayTeam.name} visits ${homeTeam.name} in tonight's action.`;
+    // Use matchupText which is already validated for cross-team matchups
+    whyWatch = starPower.matchupType === 'vs'
+      ? `${starPower.matchupText} headline this compelling matchup.`
+      : starPower.matchupType === 'featured'
+        ? `${starPower.matchupText} in tonight's action.`
+        : `${awayTeam.name} visits ${homeTeam.name} in tonight's action.`;
   } else {
     if (totalScore >= 70) {
-      whyWatch = `${primaryReason}. ${supportingReasons.slice(1, 3).join('. ')}.`;
+      // Get second reason that's different from primary
+      const secondReason = supportingReasons.find(r => r !== primaryReason) || '';
+      whyWatch = secondReason ? `${primaryReason}. ${secondReason}.` : `${primaryReason}.`;
     } else if (totalScore >= 55) {
-      whyWatch = `${primaryReason}. ${supportingReasons[1] || 'Solid viewing option'}.`;
+      const secondReason = supportingReasons.find(r => r !== primaryReason) || 'Solid viewing option';
+      whyWatch = `${primaryReason}. ${secondReason}.`;
     } else {
       whyWatch = `${awayTeam.name} at ${homeTeam.name}. ${primaryReason}.`;
     }
   }
+  
+  // Clean up whyWatch - remove double periods, trim
+  whyWatch = whyWatch.replace(/\.+/g, '.').replace(/\.\s*\./g, '.').trim();
   
   return {
     score: totalScore,
@@ -789,7 +877,14 @@ const transformESPNGame = (event, sport) => {
     supportingReasons: watchability.supportingReasons,
     signals: {
       standingsRelevance: watchability.components.stakes >= 18 ? 'High' : watchability.components.stakes >= 12 ? 'Medium' : 'Low',
-      starMatchup: watchability.details.starPower.stars.slice(0, 2).join(' vs ') || null,
+      // CRITICAL: Use validated matchup - NEVER show same-team "vs" matchups
+      starMatchup: watchability.details.starPower.matchupType === 'vs' 
+        ? watchability.details.starPower.matchupText 
+        : null, // Only show if it's a valid cross-team matchup
+      // For single-team stars, use different label
+      featuredPlayers: watchability.details.starPower.matchupType === 'featured'
+        ? watchability.details.starPower.matchupText
+        : null,
       rivalry: watchability.details.narrative.score >= 10 ? watchability.details.narrative.reason : null,
     },
     betting: null,
@@ -2226,10 +2321,22 @@ export default function GamenightApp() {
                     }`}>Why Watch</div>
                     <div className="text-sm leading-relaxed mb-3">{pick?.whyWatch || bestGame.whyWatch}</div>
                     
-                    {/* Supporting Reasons */}
+                    {/* Supporting Reasons - filtered to not repeat whyWatch */}
                     {bestGame.supportingReasons && bestGame.supportingReasons.length > 0 && (
                       <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-white/5">
-                        {bestGame.supportingReasons.slice(0, 3).map((reason, i) => (
+                        {bestGame.supportingReasons
+                          .filter(reason => {
+                            // Don't show if this reason is already in whyWatch
+                            const whyWatch = (pick?.whyWatch || bestGame.whyWatch || '').toLowerCase();
+                            const reasonLower = reason.toLowerCase();
+                            // Check for substantial overlap
+                            const reasonWords = reasonLower.split(' ').filter(w => w.length > 4);
+                            const overlapCount = reasonWords.filter(w => whyWatch.includes(w)).length;
+                            // If more than half the significant words overlap, skip
+                            return overlapCount < reasonWords.length / 2;
+                          })
+                          .slice(0, 3)
+                          .map((reason, i) => (
                           <span key={i} className="text-[10px] text-gray-400 px-2 py-1 bg-white/5 rounded-lg">
                             {reason}
                           </span>
@@ -2268,12 +2375,23 @@ export default function GamenightApp() {
 
                   {bestGame.signals && (
                     <div className="grid grid-cols-2 gap-2.5 mb-5">
-                      {Object.entries(bestGame.signals).filter(([k, v]) => v).map(([k, v]) => (
-                        <div key={k} className="bg-white/[0.03] border border-white/5 rounded-2xl p-3.5">
-                          <div className="text-[10px] text-gray-500 uppercase mb-1">{k.replace(/([A-Z])/g, ' $1')}</div>
-                          <div className={`text-sm font-semibold ${String(v).includes('High') ? 'text-emerald-400' : 'text-amber-400'}`}>{v}</div>
-                        </div>
-                      ))}
+                      {Object.entries(bestGame.signals).filter(([k, v]) => v).map(([k, v]) => {
+                        // Map signal keys to proper display labels
+                        const labelMap = {
+                          standingsRelevance: 'Standings',
+                          starMatchup: 'Star Matchup',
+                          featuredPlayers: 'Players to Watch',
+                          rivalry: 'Rivalry'
+                        };
+                        const label = labelMap[k] || k.replace(/([A-Z])/g, ' $1').trim();
+                        
+                        return (
+                          <div key={k} className="bg-white/[0.03] border border-white/5 rounded-2xl p-3.5">
+                            <div className="text-[10px] text-gray-500 uppercase mb-1">{label}</div>
+                            <div className={`text-sm font-semibold ${String(v).includes('High') ? 'text-emerald-400' : 'text-amber-400'}`}>{v}</div>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
 
