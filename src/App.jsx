@@ -189,7 +189,7 @@ const transformESPNGame = (event, sport) => {
     score: Math.round(score),
     whyWatch,
     signals: {
-      playoffImpact: combinedWinPct > 0.55 ? 'High' : combinedWinPct > 0.45 ? 'Medium' : 'Low',
+      standingsRelevance: combinedWinPct > 0.55 ? 'High' : combinedWinPct > 0.45 ? 'Medium' : 'Low',
       starMatchup: null,
       rivalry: null,
     },
@@ -1018,6 +1018,7 @@ const Icons = {
   LogOut: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
   Calendar: () => <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
   AlertCircle: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>,
+  RefreshCw: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>,
   Loader: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{animation: 'spin 1s linear infinite'}}><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg>,
   Live: () => <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg>,
 };
@@ -1596,13 +1597,33 @@ export default function GamenightApp() {
                     </div>
                   )}
 
-                  <div className="flex gap-3">
-                    <AnimatedButton primary className="flex-1 py-3.5 bg-white text-black rounded-2xl font-semibold flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-white/10 transition-shadow">
+                  <div className="flex gap-3 mb-4">
+                    <AnimatedButton 
+                      primary 
+                      onClick={() => {
+                        // Open streaming search for this game
+                        const searchQuery = encodeURIComponent(`${bestGame.awayTeam?.name} vs ${bestGame.homeTeam?.name} live stream`);
+                        window.open(`https://www.google.com/search?q=${searchQuery}`, '_blank');
+                      }}
+                      className="flex-1 py-3.5 bg-white text-black rounded-2xl font-semibold flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-white/10 transition-shadow"
+                    >
                       <Icons.Tv /> Watch Live
                     </AnimatedButton>
-                    <AnimatedButton className="flex-1 py-3.5 bg-white/5 border border-white/10 rounded-2xl font-semibold flex items-center justify-center gap-2 hover:bg-orange-500/10 hover:border-orange-500/30 hover:text-orange-400 transition-colors">
-                      <Icons.ExternalLink /> Bet
+                    <AnimatedButton 
+                      onClick={() => {
+                        // Open ESPN game page for odds/info
+                        const espnUrl = `https://www.espn.com/${activeSport}/game/_/gameId/${bestGame.id}`;
+                        window.open(espnUrl, '_blank');
+                      }}
+                      className="flex-1 py-3.5 bg-white/5 border border-white/10 rounded-2xl font-semibold flex items-center justify-center gap-2 hover:bg-orange-500/10 hover:border-orange-500/30 hover:text-orange-400 transition-colors"
+                    >
+                      <Icons.ExternalLink /> Game Info
                     </AnimatedButton>
+                  </div>
+                  
+                  {/* Betting Disclaimer */}
+                  <div className="text-[11px] text-gray-500 text-center leading-relaxed">
+                    Game information is for entertainment purposes only. No real-money gambling occurs in this app.
                   </div>
                 </div>
 
@@ -1981,11 +2002,12 @@ export default function GamenightApp() {
               <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3 px-1">Support</div>
               <div className="bg-white/[0.02] rounded-2xl border border-white/5 overflow-hidden">
                 {[
-                  ['Help Center', 'Get help with the app', Icons.HelpCircle],
-                  ['Contact Us', 'Send feedback or report issues', Icons.Mail],
-                ].map(([label, desc, Icon], idx, arr) => (
+                  ['Help Center', 'Get help with the app', Icons.HelpCircle, null],
+                  ['Contact Us', 'support@gamenight.app', Icons.Mail, 'mailto:support@gamenight.app'],
+                ].map(([label, desc, Icon, href], idx, arr) => (
                   <div 
                     key={label} 
+                    onClick={() => href && window.open(href, '_blank')}
                     className={`flex items-center justify-between p-4 cursor-pointer hover:bg-white/[0.02] transition-colors active:bg-white/[0.04] ${idx < arr.length - 1 ? 'border-b border-white/5' : ''}`}
                   >
                     <div className="flex items-center gap-3.5">
@@ -1998,6 +2020,26 @@ export default function GamenightApp() {
                     <div className="text-gray-600"><Icons.ChevronRight /></div>
                   </div>
                 ))}
+              </div>
+            </div>
+
+            {/* Purchases Section */}
+            <div className="mb-6">
+              <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3 px-1">Purchases</div>
+              <div className="bg-white/[0.02] rounded-2xl border border-white/5 overflow-hidden">
+                <div 
+                  onClick={() => showToastMsg('Purchases will be restorable once available.')}
+                  className="flex items-center justify-between p-4 cursor-pointer hover:bg-white/[0.02] transition-colors active:bg-white/[0.04]"
+                >
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-9 h-9 bg-white/5 rounded-xl flex items-center justify-center text-gray-400"><Icons.RefreshCw /></div>
+                    <div>
+                      <div className="text-[15px] text-white font-medium">Restore Purchases</div>
+                      <div className="text-[13px] text-gray-500">Restore previous purchases</div>
+                    </div>
+                  </div>
+                  <div className="text-gray-600"><Icons.ChevronRight /></div>
+                </div>
               </div>
             </div>
 
@@ -2020,6 +2062,14 @@ export default function GamenightApp() {
                     <div className="text-gray-600"><Icons.ChevronRight /></div>
                   </div>
                 ))}
+              </div>
+              
+              {/* Betting Disclaimer in Settings */}
+              <div className="mt-4 p-4 bg-white/[0.02] rounded-2xl border border-white/5">
+                <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Entertainment Disclaimer</div>
+                <div className="text-[13px] text-gray-400 leading-relaxed">
+                  All game information, scores, and statistics are provided for entertainment purposes only. No real-money gambling or betting transactions occur within this app. Gamenight does not facilitate, encourage, or endorse gambling.
+                </div>
               </div>
             </div>
 
@@ -3151,9 +3201,9 @@ export default function GamenightApp() {
                 <Icons.Crown />
               </div>
               <h2 className="text-2xl font-extrabold mb-2">Go Premium</h2>
-              <p className="text-gray-400 mb-8">Unlock advanced features</p>
+              <p className="text-gray-400 mb-8">Enhanced viewing experience</p>
               <div className="text-left mb-8 space-y-3">
-                {['Advanced Betting Signals', 'Line Movement Alerts', 'Sharp Money Indicators', 'Ad-Free Experience'].map(f => (
+                {['Extended Game Insights', 'Real-Time Score Alerts', 'Detailed Team Statistics', 'Ad-Free Experience'].map(f => (
                   <div key={f} className="flex items-center gap-3 py-3 border-b border-white/5"><span className="text-emerald-400"><Icons.Check /></span><span>{f}</span></div>
                 ))}
               </div>
@@ -3162,6 +3212,19 @@ export default function GamenightApp() {
                 Start Free Trial
               </AnimatedButton>
               <p className="text-sm text-gray-500 mt-3">7-day free trial, cancel anytime</p>
+              
+              {/* Restore Purchases */}
+              <button 
+                onClick={() => { setShowPaywall(false); showToastMsg('Purchases will be restorable once available.'); }}
+                className="w-full mt-4 py-3 text-sm text-gray-400 hover:text-white transition-colors"
+              >
+                Restore Purchases
+              </button>
+              
+              {/* Disclaimer */}
+              <p className="text-[11px] text-gray-600 mt-4 leading-relaxed">
+                Premium features provide enhanced game information for entertainment purposes only. No betting or gambling functionality included.
+              </p>
             </div>
           </div>
         </div>
@@ -3176,11 +3239,8 @@ export default function GamenightApp() {
 
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         .animate-pulse { animation: pulse 2s ease-in-out infinite; }
-        .animate-fadeIn { animation: fadeIn 0.3s ease-out; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
       `}</style>
     </div>
   );
