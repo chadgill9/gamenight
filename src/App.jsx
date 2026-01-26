@@ -123,6 +123,37 @@ const getGameStatusText = (status) => {
 };
 
 // ============================================
+// DATE VALIDATION (P0 - Stale Data Prevention)
+// ============================================
+// CRITICAL: All games must be validated as "today's" games
+// Prevents showing yesterday's picks or stale data
+
+// Get today's date in Eastern Time (sports standard timezone)
+// Returns YYYY-MM-DD format to match ESPN gameDate format
+const getTodayDateET = () => {
+  const now = new Date();
+  // Format in Eastern Time
+  const etDate = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const year = etDate.getFullYear();
+  const month = String(etDate.getMonth() + 1).padStart(2, '0');
+  const day = String(etDate.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Validate that a game date matches today (in ET)
+// Returns { isToday, gameDate, todayDate } for debugging
+const validateGameDate = (gameDate) => {
+  if (!gameDate) return { isToday: false, gameDate: null, todayDate: getTodayDateET(), reason: 'NO_DATE' };
+  const todayDate = getTodayDateET();
+  return {
+    isToday: gameDate === todayDate,
+    gameDate,
+    todayDate,
+    reason: gameDate === todayDate ? 'VALID' : 'DATE_MISMATCH'
+  };
+};
+
+// ============================================
 // WATCHABILITY ALGORITHM v2
 // ============================================
 
@@ -470,6 +501,22 @@ const validateGameData = (homeTeam, awayTeam, gameDate) => {
     issues.push('AWAY_MISSING_RECORD');
   }
   
+  // P1 FIX: Log telemetry when data validation issues are detected
+  // This helps diagnose upstream data problems
+  if (issues.length > 0) {
+    const telemetry = {
+      type: 'DATA_VALIDATION_ISSUE',
+      issues,
+      homeTeam: homeTeam.abbreviation || homeTeam.name,
+      awayTeam: awayTeam.abbreviation || awayTeam.name,
+      homeRecord: homeTeam.record,
+      awayRecord: awayTeam.record
+    };
+    console.warn('[Gamenight] Data validation issues:', telemetry);
+    // Fire-and-forget telemetry (don't block on it)
+    logError(new Error('Data validation issues detected'), telemetry);
+  }
+  
   return {
     valid: issues.length === 0,
     fallbackMode: issues.length > 0,
@@ -623,8 +670,9 @@ const calculateNBAStarPower = (homeTeam, awayTeam) => {
 // NEVER show two players from the same team
 // CRITICAL: Only uses NFL_PLAYERS data (no cross-sport contamination)
 const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
-  const homeAbbr = homeTeam.abbreviation;
-  const awayAbbr = awayTeam.abbreviation;
+  // P1 FIX: Null-safe abbreviation access
+  const homeAbbr = homeTeam?.abbreviation || '';
+  const awayAbbr = awayTeam?.abbreviation || '';
   
   // SPORT-SCOPED: Only get NFL players
   const homeQB = getNFLTeamQB(homeAbbr);
@@ -656,7 +704,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     score = 20;
     matchupType = 'vs';
     matchupText = `${awayQB} vs ${homeQB}`;
-    matchupLabel = 'QB Matchup';
+    matchupLabel = 'Expected QB Matchup'; // P0 FIX: Softer language (injury status unknown)
     displayedStars = [awayQB, homeQB];
   }
   // CASE 2: One team has QB, other has defensive star (TWO players, DIFFERENT teams)
@@ -665,12 +713,12 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     if (homeQB && awayDefense.length > 0 && homeAbbr !== awayAbbr) {
       matchupType = 'vs';
       matchupText = `${awayDefense[0]} vs ${homeQB}`;
-      matchupLabel = 'Key Matchup';
+      matchupLabel = 'Key Players'; // P0 FIX: Softer than "Key Matchup"
       displayedStars = [awayDefense[0], homeQB];
     } else if (awayQB && homeDefense.length > 0 && homeAbbr !== awayAbbr) {
       matchupType = 'vs';
       matchupText = `${awayQB} vs ${homeDefense[0]}`;
-      matchupLabel = 'Key Matchup';
+      matchupLabel = 'Key Players'; // P0 FIX: Softer than "Key Matchup"
       displayedStars = [awayQB, homeDefense[0]];
     } else {
       // Fallback - show single player only
@@ -686,7 +734,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     score = 12;
     matchupType = 'vs';
     matchupText = `${awayStars[0]} vs ${homeStars[0]}`;
-    matchupLabel = 'Key Matchup';
+    matchupLabel = 'Key Players'; // P0 FIX: Softer language
     displayedStars = [awayStars[0], homeStars[0]];
   }
   // CASE 4: Only one team has star QB (ONE player only)
@@ -724,6 +772,8 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     matchupType,
     matchupText,
     matchupLabel,
+    // P0 FIX: Flag that injury status is NOT verified
+    injuryStatusVerified: false,
     reason: matchupText || 'No standout players'
   };
 };
@@ -743,8 +793,9 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
 //   - NEVER show two players from the same team
 // CRITICAL: Only uses MLB_PLAYERS data (no cross-sport contamination)
 const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitcher = null) => {
-  const homeAbbr = homeTeam.abbreviation;
-  const awayAbbr = awayTeam.abbreviation;
+  // P1 FIX: Null-safe abbreviation access
+  const homeAbbr = homeTeam?.abbreviation || '';
+  const awayAbbr = awayTeam?.abbreviation || '';
   
   let score = 5;
   let matchupType = 'none';
@@ -780,6 +831,8 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
       matchupType,
       matchupText,
       matchupLabel,
+      // P0 FIX: Pitcher data from ESPN is "probable" not confirmed
+      injuryStatusVerified: false,
       reason: matchupText
     };
   }
@@ -803,6 +856,8 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
       matchupType,
       matchupText,
       matchupLabel,
+      // P0 FIX: Pitcher data from ESPN is "probable" not confirmed
+      injuryStatusVerified: false,
       reason: matchupText
     };
   }
@@ -873,6 +928,8 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
     matchupType,
     matchupText,
     matchupLabel,
+    // P0 FIX: Static player list, injury status NOT verified
+    injuryStatusVerified: false,
     reason: matchupText || 'No pitcher data available'
   };
 };
@@ -887,16 +944,20 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
 const buildMatchupResult = (homeTeam, awayTeam, homeStarList, awayStarList, score, sport) => {
   const bestHomeStar = homeStarList[0] || null;
   const bestAwayStar = awayStarList[0] || null;
-  const homeTeamAbbr = homeTeam.abbreviation;
-  const awayTeamAbbr = awayTeam.abbreviation;
+  // P1 FIX: Null-safe abbreviation access
+  const homeTeamAbbr = homeTeam?.abbreviation || '';
+  const awayTeamAbbr = awayTeam?.abbreviation || '';
   
   let matchupType = 'none';
   let matchupText = '';
-  let matchupLabel = sport === 'nba' ? 'Star Matchup' : 'Key Players';
+  // P0 FIX: Use softer labels acknowledging we don't have real-time injury data
+  // Players may be injured/resting - this is "expected" not "confirmed"
+  let matchupLabel = sport === 'nba' ? 'Expected Matchup' : 'Key Players';
   let allStars = [];
   
   // CRITICAL VALIDATION: Only "vs" if BOTH teams have stars AND teams are different
-  if (bestHomeStar && bestAwayStar && homeTeamAbbr !== awayTeamAbbr) {
+  // P1 FIX: Also require valid abbreviations to prevent undefined comparison
+  if (bestHomeStar && bestAwayStar && homeTeamAbbr && awayTeamAbbr && homeTeamAbbr !== awayTeamAbbr) {
     matchupType = 'vs';
     matchupText = `${bestAwayStar} vs ${bestHomeStar}`;
     allStars = [bestAwayStar, bestHomeStar];
@@ -922,6 +983,9 @@ const buildMatchupResult = (homeTeam, awayTeam, homeStarList, awayStarList, scor
     matchupType,
     matchupText,
     matchupLabel,
+    // P0 FIX: Flag that injury status is NOT verified (static list, no real-time data)
+    // This allows UI to show appropriate disclaimers
+    injuryStatusVerified: false,
     reason: matchupText || 'No major stars'
   };
 };
@@ -965,10 +1029,14 @@ const calculateNarrativeScore = (homeTeam, awayTeam, headline) => {
   let score = 5;
   let reasons = [];
   
+  // P1 FIX: Null-safe rivalry check
+  const homeAbbr = homeTeam?.abbreviation || '';
+  const awayAbbr = awayTeam?.abbreviation || '';
+  
   // Check for rivalry
-  const rivalryKey1 = `${homeTeam.abbreviation}-${awayTeam.abbreviation}`;
-  const rivalryKey2 = `${awayTeam.abbreviation}-${homeTeam.abbreviation}`;
-  const rivalryIntensity = RIVALRIES[rivalryKey1] || RIVALRIES[rivalryKey2] || 0;
+  const rivalryKey1 = `${homeAbbr}-${awayAbbr}`;
+  const rivalryKey2 = `${awayAbbr}-${homeAbbr}`;
+  const rivalryIntensity = (homeAbbr && awayAbbr) ? (RIVALRIES[rivalryKey1] || RIVALRIES[rivalryKey2] || 0) : 0;
   
   if (rivalryIntensity === 3) {
     score = 20;
@@ -987,8 +1055,10 @@ const calculateNarrativeScore = (homeTeam, awayTeam, headline) => {
     reasons.push('Featured matchup');
   }
   
-  // Same state/city matchups
-  const sameCity = (homeTeam.city === awayTeam.city);
+  // Same state/city matchups - null-safe
+  const homeCity = homeTeam?.city || '';
+  const awayCity = awayTeam?.city || '';
+  const sameCity = (homeCity && awayCity && homeCity === awayCity);
   if (sameCity && rivalryIntensity === 0) {
     score = Math.min(20, score + 8);
     reasons.push('City showdown');
@@ -1082,9 +1152,31 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
   if (accessibility.score >= 7) contextReasons.push(accessibility.reason);
   
   // Abstract descriptions for vs matchups (no player names)
-  const getAbstractMatchupPhrase = (label, score) => {
+  // P0 FIX: In fallback mode, use softer language (no superlatives)
+  const getAbstractMatchupPhrase = (label, score, isFallbackMode) => {
+    // In fallback mode, use conservative language (data quality is degraded)
+    if (isFallbackMode) {
+      if (label === 'Expected QB Matchup' || label === 'QB Matchup') {
+        return 'Two quarterbacks face off tonight';
+      }
+      if (label === 'Starting Pitchers') {
+        return 'Two starters take the mound tonight';
+      }
+      if (label === 'Star Batters') {
+        return 'Notable bats in tonight\'s lineup';
+      }
+      if (label === 'Expected Matchup' || label === 'Star Matchup') {
+        return 'Notable players from both teams tonight';
+      }
+      if (label === 'Key Players' || label === 'Key Matchup') {
+        return 'Players to watch in tonight\'s game';
+      }
+      return 'A matchup worth watching tonight';
+    }
+    
+    // Normal mode - confident language is appropriate
     // Sport-specific abstract phrases based on matchup label
-    if (label === 'QB Matchup') {
+    if (label === 'Expected QB Matchup' || label === 'QB Matchup') {
       if (score >= 18) return 'Elite quarterback showdown tonight';
       return 'Two quality signal-callers face off';
     }
@@ -1096,11 +1188,11 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
       if (score >= 14) return 'Offensive firepower on both sides';
       return 'Star-studded lineups clash tonight';
     }
-    if (label === 'Star Matchup') {
+    if (label === 'Expected Matchup' || label === 'Star Matchup') {
       if (score >= 18) return 'Superstar showdown headlines tonight';
       return 'Top talent on display from both teams';
     }
-    if (label === 'Key Matchup') {
+    if (label === 'Key Players' || label === 'Key Matchup') {
       if (score >= 15) return 'Marquee matchup between key playmakers';
       return 'Impact players headline this contest';
     }
@@ -1110,10 +1202,11 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
   
   // Build whyWatch based on matchup type
   let whyWatch;
+  const isFallbackMode = validation.fallbackMode;
   
   if (hasStarMatchup) {
     // VS MATCHUP: Names shown in card, use abstract description here
-    const abstractPhrase = getAbstractMatchupPhrase(starPower.matchupLabel, starPower.score);
+    const abstractPhrase = getAbstractMatchupPhrase(starPower.matchupLabel, starPower.score, isFallbackMode);
     
     if (contextReasons.length > 0) {
       // Add context (stakes, rivalry, etc.) - no player names
@@ -1124,7 +1217,16 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
   } else if (hasFeaturedPlayer) {
     // FEATURED PLAYER: Name shown in card, use abstract description here too
     // (avoids duplication since card shows "Featured Player: [Name]")
-    const getAbstractFeaturedPhrase = (label) => {
+    // P0 FIX: In fallback mode, use softer language for featured players too
+    const getAbstractFeaturedPhrase = (label, isFallback) => {
+      if (isFallback) {
+        if (label === 'Featured QB') return 'A notable quarterback takes the field tonight';
+        if (label === 'Starting Pitcher') return 'A starting pitcher to watch tonight';
+        if (label === 'Featured Batter') return 'A hitter to watch in tonight\'s game';
+        if (label === 'Featured Player') return 'A notable player in tonight\'s matchup';
+        return 'A player worth watching tonight';
+      }
+      // Normal mode
       if (label === 'Featured QB') return 'One of the game\'s elite quarterbacks takes the field';
       if (label === 'Starting Pitcher') return 'A quality arm takes the mound tonight';
       if (label === 'Featured Batter') return 'One of baseball\'s most dangerous hitters in action';
@@ -1132,7 +1234,7 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
       return 'Notable talent on display tonight';
     };
     
-    const abstractPhrase = getAbstractFeaturedPhrase(starPower.matchupLabel);
+    const abstractPhrase = getAbstractFeaturedPhrase(starPower.matchupLabel, isFallbackMode);
     
     if (contextReasons.length > 0) {
       whyWatch = `${abstractPhrase}. ${contextReasons[0]}.`;
@@ -1141,12 +1243,15 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
     }
   } else {
     // NO MATCHUP: Team-based description
+    // P1 FIX: Null-safe team name access
+    const homeName = homeTeam?.name || 'Home Team';
+    const awayName = awayTeam?.name || 'Away Team';
     if (contextReasons.length > 0) {
-      whyWatch = `${awayTeam.name} at ${homeTeam.name}. ${contextReasons[0]}.`;
+      whyWatch = `${awayName} at ${homeName}. ${contextReasons[0]}.`;
     } else if (validation.fallbackMode) {
-      whyWatch = `${awayTeam.name} visits ${homeTeam.name} tonight.`;
+      whyWatch = `${awayName} visits ${homeName} tonight.`;
     } else {
-      whyWatch = `${awayTeam.name} takes on ${homeTeam.name}.`;
+      whyWatch = `${awayName} takes on ${homeName}.`;
     }
   }
   
@@ -1277,6 +1382,16 @@ const transformESPNGame = (event, sport) => {
     }
     if (!awayPitcher && awayTeam.probables?.length > 0) {
       awayPitcher = awayTeam.probables[0]?.athlete?.displayName || awayTeam.probables[0]?.athlete?.fullName;
+    }
+    
+    // P1 FIX: Log telemetry when pitcher data is missing (common issue with MLB)
+    if (!homePitcher || !awayPitcher) {
+      console.log('[Gamenight] Missing MLB pitcher data:', {
+        game: `${awayTeam.team?.abbreviation} @ ${homeTeam.team?.abbreviation}`,
+        homePitcher: homePitcher || 'TBD',
+        awayPitcher: awayPitcher || 'TBD',
+        hasProbables: !!(competition.probables?.length > 0)
+      });
     }
   }
   
@@ -1534,36 +1649,77 @@ const sortRosterBySport = (roster, sport, depthChartData = null) => {
 // ============================================
 const api = {
   // Fetch live games via Supabase proxy (avoids CORS)
+  // P0 FIX: Now validates all games are from today's date (ET)
   async getGamesFromESPN(sport = 'nba') {
+    const fetchTimestamp = new Date().toISOString();
+    const todayET = getTodayDateET();
+    
     try {
       const res = await fetch(`${ESPN_PROXY}?sport=${sport}&endpoint=scoreboard`);
       if (!res.ok) {
         console.error('ESPN proxy error:', res.status);
-        return { games: [], error: `API error: ${res.status}` };
+        logError(new Error(`ESPN proxy error: ${res.status}`), { sport, endpoint: 'scoreboard' });
+        return { games: [], error: `API error: ${res.status}`, dataFreshness: { fetchTimestamp, todayET, status: 'ERROR' } };
       }
       const data = await res.json();
       if (data.error) {
-        return { games: [], error: data.error };
+        return { games: [], error: data.error, dataFreshness: { fetchTimestamp, todayET, status: 'ERROR' } };
       }
-      const games = (data.events || [])
+      
+      // Transform all events first
+      const allGames = (data.events || [])
         .map(e => transformESPNGame(e, sport))
-        .filter(Boolean)
-        .sort((a, b) => b.score - a.score);
-      return { games };
+        .filter(Boolean);
+      
+      // P0 FIX: Filter to only today's games (stale data prevention)
+      const todaysGames = allGames.filter(game => {
+        const validation = validateGameDate(game.gameDate);
+        if (!validation.isToday) {
+          // Log filtered games for observability (not an error, just info)
+          console.log(`[Gamenight] Filtered out non-today game: ${game.homeTeam?.name} vs ${game.awayTeam?.name} (${game.gameDate} != ${todayET})`);
+        }
+        return validation.isToday;
+      });
+      
+      // Sort by score (highest first)
+      const games = todaysGames.sort((a, b) => b.score - a.score);
+      
+      // Build data freshness metadata
+      const dataFreshness = {
+        fetchTimestamp,
+        todayET,
+        status: 'OK',
+        totalEventsReceived: data.events?.length || 0,
+        gamesAfterTransform: allGames.length,
+        todaysGamesCount: todaysGames.length,
+        filteredOutCount: allGames.length - todaysGames.length
+      };
+      
+      // Log if games were filtered (important for debugging stale data issues)
+      if (dataFreshness.filteredOutCount > 0) {
+        console.warn(`[Gamenight] Filtered ${dataFreshness.filteredOutCount} non-today games for ${sport}`);
+      }
+      
+      return { games, dataFreshness };
     } catch (err) {
       console.error('ESPN fetch failed:', err);
-      return { games: [], error: err.message || 'Network error' };
+      logError(err, { sport, endpoint: 'scoreboard', context: 'getGamesFromESPN' });
+      return { games: [], error: err.message || 'Network error', dataFreshness: { fetchTimestamp, todayET, status: 'ERROR' } };
     }
   },
 
   // Get tonight's pick (highest scored game from ESPN)
   async getPicksToday(sport = 'nba') {
-    const { games, error } = await this.getGamesFromESPN(sport);
+    const { games, error, dataFreshness } = await this.getGamesFromESPN(sport);
     if (error) {
-      return { pick: null, message: error };
+      return { pick: null, message: error, dataFreshness };
     }
     if (games.length === 0) {
-      return { pick: null, message: 'No games today', confidenceTier: calculateConfidenceTier([]) };
+      // P0 FIX: Distinguish between "no games scheduled" and "data issues"
+      const message = dataFreshness?.status === 'OK' 
+        ? `No ${sport.toUpperCase()} games today`
+        : 'Unable to load games';
+      return { pick: null, message, confidenceTier: calculateConfidenceTier([]), dataFreshness };
     }
     const bestGame = games[0];
     const confidenceTier = calculateConfidenceTier(games);
@@ -1579,7 +1735,8 @@ const api = {
         components: bestGame.components,
         supportingReasons: bestGame.supportingReasons,
       },
-      confidenceTier
+      confidenceTier,
+      dataFreshness
     };
   },
 
@@ -1633,6 +1790,7 @@ const api = {
             console.log('Depth chart data loaded:', depthChartData?.depthchart?.length, 'formations');
           } catch (e) {
             console.error('Depth chart parse error:', e);
+            logError(e, { context: 'depthChartParse', sport: sport });
           }
         }
       }
@@ -1733,6 +1891,7 @@ const api = {
         }
       } catch (e) {
         console.error('Schedule parse error:', e);
+        logError(e, { context: 'scheduleParse', teamId, sport });
       }
       
       // Parse roster - handle both ESPN response formats
@@ -1803,6 +1962,7 @@ const api = {
       } catch (e) {
         rosterError = e.message;
         console.error('Roster parse error:', e);
+        logError(e, { context: 'rosterParse', teamId, sport });
       }
       
       // Parse record stats
@@ -1863,6 +2023,7 @@ const api = {
         }
       } catch (e) {
         console.error('Stats fetch error:', e);
+        logError(e, { context: 'statsFetch', teamId, sport });
       }
       
       // Get next event status
@@ -1956,6 +2117,7 @@ const api = {
       };
     } catch (err) {
       console.error('Team fetch failed:', err);
+      logError(err, { context: 'teamFetch', teamId, sport });
       return { team: null, error: err.message };
     }
   },
@@ -2076,6 +2238,7 @@ const api = {
       };
     } catch (err) {
       console.error('Player fetch failed:', err);
+      logError(err, { context: 'playerFetch', playerId, sport });
       return { player: null, error: err.message };
     }
   },
@@ -2713,14 +2876,23 @@ export default function GamenightApp() {
                         {pick?.confidenceTier?.header || "Tonight's Pick"}
                       </span>
                       {pick?.confidenceTier?.subtext && (
-                        <div className="text-[10px] text-gray-500 mt-1">{pick.confidenceTier.subtext}</div>
+                        <div className="text-[10px] text-gray-500 mt-1">
+                          {pick.confidenceTier.subtext}
+                          {/* P1 FIX: Subtle indicator when data quality is degraded */}
+                          {bestGame.validation?.fallbackMode && (
+                            <span className="ml-1 text-yellow-600/70" title="Some game data unavailable">*</span>
+                          )}
+                        </div>
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className={`text-lg font-extrabold ${
-                        bestGame.score >= 75 ? 'text-green-400' :
-                        bestGame.score >= 60 ? 'text-orange-400' : 'text-gray-400'
-                      }`}>{bestGame.score}</span>
+                      <div className="text-right">
+                        <div className="text-[9px] text-gray-500 uppercase tracking-wide">Watchability</div>
+                        <span className={`text-lg font-extrabold ${
+                          bestGame.score >= 75 ? 'text-green-400' :
+                          bestGame.score >= 60 ? 'text-orange-400' : 'text-gray-400'
+                        }`}>{bestGame.score}</span>
+                      </div>
                       <span className="text-xs font-semibold text-gray-400 px-3 py-1.5 bg-white/5 rounded-xl">{activeSport.toUpperCase()}</span>
                     </div>
                   </div>
@@ -2809,7 +2981,7 @@ export default function GamenightApp() {
                     )}
                   </div>
 
-                  {/* Score Components Breakdown */}
+                  {/* Watchability Score Breakdown - NOT a win prediction */}
                   {bestGame.components && (
                     <div className="grid grid-cols-5 gap-1 mb-5 p-3 bg-white/[0.02] rounded-xl">
                       {[
@@ -2944,7 +3116,10 @@ export default function GamenightApp() {
                                 )}
                               </div>
                             </div>
-                            <span className="text-lg font-extrabold text-gray-500">{g.score}</span>
+                            <div className="text-right">
+                              <div className="text-[8px] text-gray-600 uppercase tracking-wide">Watch</div>
+                              <span className="text-lg font-extrabold text-gray-500">{g.score}</span>
+                            </div>
                           </div>
                         </div>
                       ))}
