@@ -412,14 +412,67 @@ const calculateStakesScore = (homeTeam, awayTeam, validation, sport = 'nba') => 
   return { score: Math.min(30, score), reason };
 };
 
-// 2. STAR POWER SCORE (0-20 pts) - Who's playing?
-// CRITICAL: Must NEVER produce same-team "vs" matchups
+// ============================================
+// SPORT-SPECIFIC KEY PLAYER DATA
+// ============================================
+
+// NFL Position-based player categorization
+const NFL_PLAYERS_BY_POSITION = {
+  QB: ['Patrick Mahomes', 'Josh Allen', 'Lamar Jackson', 'Joe Burrow', 'Jalen Hurts', 
+       'Tua Tagovailoa', 'Dak Prescott', 'Jordan Love', 'Brock Purdy', 'C.J. Stroud', 'Caleb Williams'],
+  RB: ['Derrick Henry', 'Saquon Barkley', 'Christian McCaffrey'],
+  WR: ['Tyreek Hill', 'Justin Jefferson', 'CeeDee Lamb', 'Ja\'Marr Chase', 'A.J. Brown',
+       'Amon-Ra St. Brown', 'Garrett Wilson', 'Davante Adams'],
+  TE: ['Travis Kelce', 'George Kittle'],
+  DEF: ['Micah Parsons', 'T.J. Watt', 'Nick Bosa', 'Myles Garrett', 'Aaron Donald']
+};
+
+// NFL Team to QB mapping (primary QB per team)
+const NFL_TEAM_QBS = {
+  'KC': 'Patrick Mahomes', 'BUF': 'Josh Allen', 'BAL': 'Lamar Jackson', 'CIN': 'Joe Burrow',
+  'PHI': 'Jalen Hurts', 'MIA': 'Tua Tagovailoa', 'DAL': 'Dak Prescott', 'GB': 'Jordan Love',
+  'SF': 'Brock Purdy', 'HOU': 'C.J. Stroud', 'CHI': 'Caleb Williams',
+  // Teams without star QBs
+  'MIN': null, 'DET': null, 'CLE': null, 'PIT': null, 'NYJ': null, 'LV': null, 'TEN': null,
+  'LAR': null, 'SEA': null, 'ARI': null, 'CAR': null, 'TB': null, 'NO': null, 'ATL': null,
+  'NYG': null, 'WAS': null, 'NE': null, 'IND': null, 'JAX': null, 'DEN': null, 'LAC': null
+};
+
+// NFL Team to Key Defensive Player
+const NFL_TEAM_DEF_STARS = {
+  'DAL': 'Micah Parsons', 'PIT': 'T.J. Watt', 'SF': 'Nick Bosa', 'CLE': 'Myles Garrett', 'LAR': 'Aaron Donald'
+};
+
+// MLB Ace Pitchers (for when we have starter data)
+const MLB_ACE_PITCHERS = [
+  'Shohei Ohtani', 'Gerrit Cole', 'Spencer Strider', 'Zack Wheeler', 'Corbin Burnes',
+  'Dylan Cease', 'Tarik Skubal', 'Logan Webb', 'Yoshinobu Yamamoto', 'Tyler Glasnow',
+  'Zac Gallen', 'Kevin Gausman', 'Blake Snell', 'Justin Verlander', 'Max Scherzer'
+];
+
+// ============================================
+// 2. STAR/KEY PLAYER SCORE - SPORT SPECIFIC
+// ============================================
+// CRITICAL: Must NEVER produce same-team "vs" matchups in ANY sport
+
 const calculateStarPowerScore = (homeTeam, awayTeam, sport = 'nba') => {
+  // Route to sport-specific calculator
+  if (sport === 'nfl') {
+    return calculateNFLKeyPlayers(homeTeam, awayTeam);
+  } else if (sport === 'mlb') {
+    return calculateMLBKeyPlayers(homeTeam, awayTeam);
+  }
+  return calculateNBAStarPower(homeTeam, awayTeam);
+};
+
+// ============================================
+// NBA Star Power Calculator
+// ============================================
+const calculateNBAStarPower = (homeTeam, awayTeam) => {
   const homeStars = STAR_PLAYERS.TEAM_STARS[homeTeam.abbreviation] || [];
   const awayStars = STAR_PLAYERS.TEAM_STARS[awayTeam.abbreviation] || [];
   
-  // Get sport-specific star tiers
-  const { mvp, allStar } = getStarTiers(sport);
+  const { mvp, allStar } = getStarTiers('nba');
   
   // Categorize by tier AND team - keep lists strictly separated
   const homeMVPs = homeStars.filter(s => mvp.includes(s));
@@ -431,96 +484,273 @@ const calculateStarPowerScore = (homeTeam, awayTeam, sport = 'nba') => {
   const totalAllStars = homeAllStars.length + awayAllStars.length;
   
   let score = 5;
-  
-  // Track stars by team for proper matchup display - NEVER MIX TEAMS
   let homeStarList = [];
   let awayStarList = [];
   
-  // 2+ MVP-caliber players (could be both on same team or split)
   if (totalMVPs >= 2) {
     score = 20;
     homeStarList = [...homeMVPs, ...homeAllStars];
     awayStarList = [...awayMVPs, ...awayAllStars];
-  }
-  // 1 MVP + 1 All-Star
-  else if (totalMVPs === 1 && totalAllStars >= 1) {
+  } else if (totalMVPs === 1 && totalAllStars >= 1) {
     score = 17;
     homeStarList = [...homeMVPs, ...homeAllStars];
     awayStarList = [...awayMVPs, ...awayAllStars];
-  }
-  // 2+ All-Stars
-  else if (totalAllStars >= 2) {
+  } else if (totalAllStars >= 2) {
     score = 15;
     homeStarList = homeAllStars;
     awayStarList = awayAllStars;
-  }
-  // 1 MVP
-  else if (totalMVPs === 1) {
+  } else if (totalMVPs === 1) {
     score = 13;
     homeStarList = homeMVPs;
     awayStarList = awayMVPs;
-  }
-  // 1-2 All-Stars
-  else if (totalAllStars >= 1) {
+  } else if (totalAllStars >= 1) {
     score = 10;
     homeStarList = homeAllStars;
     awayStarList = awayAllStars;
   }
   
-  // Build proper matchup: MUST be one from each team
+  return buildMatchupResult(homeTeam, awayTeam, homeStarList, awayStarList, score, 'nba');
+};
+
+// ============================================
+// NFL Key Players Calculator
+// ============================================
+// RULE: Always show either:
+//   1. Two players from DIFFERENT teams ("Player A vs Player B")
+//   2. ONE player only ("Features Player A")
+// NEVER show two players from the same team
+const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
+  const homeAbbr = homeTeam.abbreviation;
+  const awayAbbr = awayTeam.abbreviation;
+  
+  // Priority 1: QB vs QB (if both teams have notable QBs)
+  const homeQB = NFL_TEAM_QBS[homeAbbr] || null;
+  const awayQB = NFL_TEAM_QBS[awayAbbr] || null;
+  
+  // Get team stars from database
+  const homeStars = STAR_PLAYERS.TEAM_STARS[homeAbbr] || [];
+  const awayStars = STAR_PLAYERS.TEAM_STARS[awayAbbr] || [];
+  
+  // Categorize home team players by position
+  const homeOffense = homeStars.filter(p => 
+    NFL_PLAYERS_BY_POSITION.RB.includes(p) || 
+    NFL_PLAYERS_BY_POSITION.WR.includes(p) || 
+    NFL_PLAYERS_BY_POSITION.TE.includes(p)
+  );
+  const homeDefense = homeStars.filter(p => NFL_PLAYERS_BY_POSITION.DEF.includes(p));
+  
+  // Categorize away team players by position
+  const awayOffense = awayStars.filter(p => 
+    NFL_PLAYERS_BY_POSITION.RB.includes(p) || 
+    NFL_PLAYERS_BY_POSITION.WR.includes(p) || 
+    NFL_PLAYERS_BY_POSITION.TE.includes(p)
+  );
+  const awayDefense = awayStars.filter(p => NFL_PLAYERS_BY_POSITION.DEF.includes(p));
+  
+  let score = 5;
+  let matchupType = 'none';
+  let matchupText = '';
+  let matchupLabel = '';
+  let displayedStars = [];
+  
+  // CASE 1: Both teams have star QBs - QB vs QB matchup (TWO players, DIFFERENT teams)
+  if (homeQB && awayQB && homeAbbr !== awayAbbr) {
+    score = 20;
+    matchupType = 'vs';
+    matchupText = `${awayQB} vs ${homeQB}`;
+    matchupLabel = 'QB Matchup';
+    displayedStars = [awayQB, homeQB];
+  }
+  // CASE 2: One team has QB, other has defensive star (TWO players, DIFFERENT teams)
+  else if ((homeQB && awayDefense.length > 0) || (awayQB && homeDefense.length > 0)) {
+    score = 15;
+    matchupType = 'vs';
+    if (homeQB && awayDefense.length > 0 && homeAbbr !== awayAbbr) {
+      matchupText = `${awayDefense[0]} vs ${homeQB}`;
+      matchupLabel = 'Key Matchup';
+      displayedStars = [awayDefense[0], homeQB];
+    } else if (awayQB && homeDefense.length > 0 && homeAbbr !== awayAbbr) {
+      matchupText = `${awayQB} vs ${homeDefense[0]}`;
+      matchupLabel = 'Key Matchup';
+      displayedStars = [awayQB, homeDefense[0]];
+    } else {
+      // Fallback if somehow same team (shouldn't happen)
+      matchupType = 'featured';
+      const singleStar = homeQB || awayQB || homeDefense[0] || awayDefense[0];
+      matchupText = `Features ${singleStar}`;
+      matchupLabel = 'Featured Player';
+      displayedStars = [singleStar];
+    }
+  }
+  // CASE 3: Both teams have non-QB stars (TWO players, DIFFERENT teams)
+  else if (homeStars.length > 0 && awayStars.length > 0 && homeAbbr !== awayAbbr) {
+    score = 12;
+    matchupType = 'vs';
+    matchupText = `${awayStars[0]} vs ${homeStars[0]}`;
+    matchupLabel = 'Key Players';
+    displayedStars = [awayStars[0], homeStars[0]];
+  }
+  // CASE 4: Only one team has star QB (ONE player only)
+  else if (homeQB || awayQB) {
+    score = 13;
+    matchupType = 'featured';
+    const qbName = awayQB || homeQB;
+    matchupText = `Features ${qbName}`;
+    matchupLabel = 'Featured QB';
+    displayedStars = [qbName];
+  }
+  // CASE 5: Only one team has notable players (ONE player only)
+  else if (homeStars.length > 0 || awayStars.length > 0) {
+    score = 8;
+    matchupType = 'featured';
+    const singleStar = awayStars[0] || homeStars[0];
+    matchupText = `Features ${singleStar}`;
+    matchupLabel = 'Featured Player';
+    displayedStars = [singleStar];
+  }
+  // CASE 6: No notable players
+  else {
+    score = 5;
+    matchupType = 'none';
+    matchupText = '';
+    matchupLabel = '';
+    displayedStars = [];
+  }
+  
+  return {
+    score,
+    stars: displayedStars,
+    homeStars: homeStars.slice(0, 2),
+    awayStars: awayStars.slice(0, 2),
+    matchupType,
+    matchupText,
+    matchupLabel,
+    reason: matchupText || 'No standout players'
+  };
+};
+
+// ============================================
+// MLB Key Players Calculator
+// ============================================
+// RULE: Always show either:
+//   1. Two players from DIFFERENT teams ("Player A vs Player B")
+//   2. ONE player only ("Features Player A")
+// NEVER show two players from the same team
+const calculateMLBKeyPlayers = (homeTeam, awayTeam) => {
+  const homeAbbr = homeTeam.abbreviation;
+  const awayAbbr = awayTeam.abbreviation;
+  
+  // Get team position players (batters)
+  const homeStars = STAR_PLAYERS.TEAM_STARS[homeAbbr] || [];
+  const awayStars = STAR_PLAYERS.TEAM_STARS[awayAbbr] || [];
+  
+  // For MLB, we check if any stars are pitchers (Ohtani is special case - he's both)
+  const homeBatters = homeStars.filter(p => !MLB_ACE_PITCHERS.includes(p) || p === 'Shohei Ohtani');
+  const awayBatters = awayStars.filter(p => !MLB_ACE_PITCHERS.includes(p) || p === 'Shohei Ohtani');
+  
+  let score = 5;
+  let matchupType = 'none';
+  let matchupText = '';
+  let matchupLabel = '';
+  let displayedStars = [];
+  
+  // Get MVP tier for scoring
+  const { mvp } = getStarTiers('mlb');
+  const homeMVPs = homeStars.filter(p => mvp.includes(p));
+  const awayMVPs = awayStars.filter(p => mvp.includes(p));
+  
+  // CASE 1: Both teams have MVP-caliber batters (TWO players, DIFFERENT teams)
+  if (homeMVPs.length > 0 && awayMVPs.length > 0 && homeAbbr !== awayAbbr) {
+    score = 20;
+    matchupType = 'vs';
+    matchupText = `${awayMVPs[0]} vs ${homeMVPs[0]}`;
+    matchupLabel = 'Star Matchup';
+    displayedStars = [awayMVPs[0], homeMVPs[0]];
+  }
+  // CASE 2: Both teams have All-Star caliber batters (TWO players, DIFFERENT teams)
+  else if (homeBatters.length > 0 && awayBatters.length > 0 && homeAbbr !== awayAbbr) {
+    score = 15;
+    matchupType = 'vs';
+    matchupText = `${awayBatters[0]} vs ${homeBatters[0]}`;
+    matchupLabel = 'Star Matchup';
+    displayedStars = [awayBatters[0], homeBatters[0]];
+  }
+  // CASE 3: One team has star batters (ONE player only)
+  else if (homeBatters.length > 0 || awayBatters.length > 0) {
+    score = 10;
+    matchupType = 'featured';
+    const singleStar = awayBatters[0] || homeBatters[0];
+    matchupText = `Features ${singleStar}`;
+    matchupLabel = 'Featured Player';
+    displayedStars = [singleStar];
+  }
+  // CASE 4: No notable batters
+  else {
+    score = 5;
+    matchupType = 'none';
+    matchupText = '';
+    matchupLabel = '';
+    displayedStars = [];
+  }
+  
+  return {
+    score,
+    stars: displayedStars,
+    homeStars: homeBatters.slice(0, 2),
+    awayStars: awayBatters.slice(0, 2),
+    matchupType,
+    matchupText,
+    matchupLabel,
+    reason: matchupText || 'No standout players'
+  };
+};
+
+// ============================================
+// Shared Matchup Result Builder
+// ============================================
+// RULE: Always show either:
+//   1. Two players from DIFFERENT teams ("Player A vs Player B")
+//   2. ONE player only ("Features Player A")
+// NEVER show two players from the same team
+const buildMatchupResult = (homeTeam, awayTeam, homeStarList, awayStarList, score, sport) => {
   const bestHomeStar = homeStarList[0] || null;
   const bestAwayStar = awayStarList[0] || null;
-  
-  // SAFETY CHECK: Verify stars are actually on different teams
-  // This guards against database errors where same player listed on multiple teams
   const homeTeamAbbr = homeTeam.abbreviation;
   const awayTeamAbbr = awayTeam.abbreviation;
   
-  // Determine matchup type and build appropriate display
-  let matchupType = 'none'; // 'vs' | 'featured' | 'none'
+  let matchupType = 'none';
   let matchupText = '';
+  let matchupLabel = sport === 'nba' ? 'Star Matchup' : 'Key Players';
   let allStars = [];
   
+  // CRITICAL VALIDATION: Only "vs" if BOTH teams have stars AND teams are different
   if (bestHomeStar && bestAwayStar && homeTeamAbbr !== awayTeamAbbr) {
-    // VALID cross-team matchup - teams are different
     matchupType = 'vs';
     matchupText = `${bestAwayStar} vs ${bestHomeStar}`;
-    allStars = [bestAwayStar, bestHomeStar, ...awayStarList.slice(1), ...homeStarList.slice(1)];
+    allStars = [bestAwayStar, bestHomeStar];
   } else if (bestHomeStar || bestAwayStar) {
-    // Only one team has stars - use "features" language, NEVER "vs"
+    // Only one team has stars - show ONLY ONE player, never multiple from same team
     matchupType = 'featured';
-    const teamWithStars = bestHomeStar ? homeStarList : awayStarList;
-    const teamName = bestHomeStar ? homeTeam.name : awayTeam.name;
-    
-    if (teamWithStars.length >= 2) {
-      // Show top 2 stars with "&" not "vs"
-      matchupText = `${teamName} stars: ${teamWithStars.slice(0, 2).join(' & ')}`;
-    } else {
-      matchupText = `Features ${teamWithStars[0]}`;
-    }
-    allStars = teamWithStars;
+    const singleStar = bestAwayStar || bestHomeStar;
+    matchupLabel = 'Featured Player';
+    matchupText = `Features ${singleStar}`;
+    allStars = [singleStar];
   } else {
-    // No stars on either team
     matchupType = 'none';
     matchupText = '';
+    matchupLabel = '';
     allStars = [];
   }
   
-  // Build reason text - use matchupText, fallback to generic
-  const reason = matchupType === 'vs' 
-    ? matchupText
-    : matchupType === 'featured'
-      ? matchupText
-      : 'No major stars';
-  
-  return { 
-    score, 
-    stars: allStars.slice(0, 4),
+  return {
+    score,
+    stars: allStars,
     homeStars: homeStarList.slice(0, 2),
     awayStars: awayStarList.slice(0, 2),
     matchupType,
     matchupText,
-    reason
+    matchupLabel,
+    reason: matchupText || 'No major stars'
   };
 };
 
@@ -875,16 +1105,19 @@ const transformESPNGame = (event, sport) => {
     validation: watchability.validation,
     components: watchability.components,
     supportingReasons: watchability.supportingReasons,
+    // Sport-specific signal labels
+    sport: sport,
     signals: {
       standingsRelevance: watchability.components.stakes >= 18 ? 'High' : watchability.components.stakes >= 12 ? 'Medium' : 'Low',
       // CRITICAL: Use validated matchup - NEVER show same-team "vs" matchups
-      starMatchup: watchability.details.starPower.matchupType === 'vs' 
-        ? watchability.details.starPower.matchupText 
-        : null, // Only show if it's a valid cross-team matchup
-      // For single-team stars, use different label
-      featuredPlayers: watchability.details.starPower.matchupType === 'featured'
-        ? watchability.details.starPower.matchupText
-        : null,
+      // Use sport-specific matchupLabel for proper display
+      ...(watchability.details.starPower.matchupType === 'vs' ? {
+        [watchability.details.starPower.matchupLabel || 'Star Matchup']: watchability.details.starPower.matchupText
+      } : {}),
+      // For single-team stars, use different label based on sport
+      ...(watchability.details.starPower.matchupType === 'featured' ? {
+        [watchability.details.starPower.matchupLabel || 'Players to Watch']: watchability.details.starPower.matchupText
+      } : {}),
       rivalry: watchability.details.narrative.score >= 10 ? watchability.details.narrative.reason : null,
     },
     betting: null,
@@ -2377,13 +2610,16 @@ export default function GamenightApp() {
                     <div className="grid grid-cols-2 gap-2.5 mb-5">
                       {Object.entries(bestGame.signals).filter(([k, v]) => v).map(([k, v]) => {
                         // Map signal keys to proper display labels
+                        // Most sport-specific labels (QB Matchup, Key Players, etc.) are already human-readable
                         const labelMap = {
                           standingsRelevance: 'Standings',
+                          rivalry: 'Rivalry',
+                          // Legacy keys (shouldn't appear anymore but kept for safety)
                           starMatchup: 'Star Matchup',
                           featuredPlayers: 'Players to Watch',
-                          rivalry: 'Rivalry'
                         };
-                        const label = labelMap[k] || k.replace(/([A-Z])/g, ' $1').trim();
+                        // Use labelMap if exists, otherwise use key as-is (already human-readable from matchupLabel)
+                        const label = labelMap[k] || k;
                         
                         return (
                           <div key={k} className="bg-white/[0.03] border border-white/5 rounded-2xl p-3.5">
