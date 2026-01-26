@@ -103,11 +103,23 @@ const getDeviceId = () => {
 // ESPN Data Transformer
 // ============================================
 
-// Check if game status indicates it's finished
+// Check if game status indicates it's finished or not active
 const isGameFinal = (status) => {
   if (!status) return false;
   const s = status.toUpperCase();
-  return s.includes('FINAL') || s.includes('POST') || s.includes('END') || s.includes('COMPLETE');
+  return s.includes('FINAL') || s.includes('POST') || s.includes('END') || s.includes('COMPLETE') || s.includes('POSTPONED') || s.includes('CANCELED') || s.includes('SUSPENDED');
+};
+
+// Get display text for game status
+const getGameStatusText = (status) => {
+  if (!status) return 'Live';
+  const s = status.toUpperCase();
+  if (s.includes('FINAL')) return 'Final';
+  if (s.includes('POSTPONED')) return 'Postponed';
+  if (s.includes('CANCELED')) return 'Canceled';
+  if (s.includes('SUSPENDED')) return 'Suspended';
+  if (s.includes('DELAYED')) return 'Delayed';
+  return 'Live';
 };
 
 const transformESPNGame = (event, sport) => {
@@ -1551,7 +1563,7 @@ export default function GamenightApp() {
                             ? 'bg-gray-500/20 text-gray-400' 
                             : 'bg-red-500/20 text-red-400'
                         }`}>
-                          {isGameFinal(bestGame.status) ? 'Final' : 'Live'}
+                          {getGameStatusText(bestGame.status)}
                         </span>
                       </div>
                     )}
