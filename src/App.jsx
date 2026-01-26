@@ -110,6 +110,385 @@ const isGameFinal = (status) => {
   return s.includes('FINAL') || s.includes('POST') || s.includes('END') || s.includes('COMPLETE') || s.includes('POSTPONED') || s.includes('CANCELED') || s.includes('SUSPENDED');
 };
 
+// P0 FIX: Check if a game is still watchable (not finished)
+// A game is watchable if it's scheduled or in progress
+const isGameWatchable = (status) => {
+  // No status usually means scheduled
+  if (!status) return true;
+  // If game is final/ended, it's NOT watchable
+  return !isGameFinal(status);
+};
+
+// Check if game is in progress (live)
+const isGameInProgress = (status) => {
+  if (!status) return false;
+  const s = status.toUpperCase();
+  return s.includes('IN_PROGRESS') || s.includes('LIVE') || s.includes('HALFTIME') || 
+         s.includes('IN ') || (s.includes('STATUS_IN') && !s.includes('FINAL'));
+};
+
+// Check if game is postponed or cancelled (drastic event)
+const isGamePostponedOrCancelled = (status) => {
+  if (!status) return false;
+  const s = status.toUpperCase();
+  return s.includes('POSTPONED') || s.includes('CANCELED') || s.includes('CANCELLED') || s.includes('SUSPENDED');
+};
+
+// ============================================
+// PICK STATE MACHINE
+// ============================================
+// Manages the "Today's Pick" lifecycle:
+// 1. Daily reset at 6 AM ET
+// 2. Re-evaluation before pick starts
+// 3. Freeze once pick starts/is in progress
+// 4. Override only for drastic events
+
+const PICK_STATE_KEY = 'gn_pick_state';
+const PICK_LOCK_REASONS = {
+  STARTED: 'STARTED',           // Game has started
+  IN_PROGRESS: 'IN_PROGRESS',   // Game is live
+  MANUAL: 'MANUAL',             // User manually locked (future feature)
+};
+const PICK_OVERRIDE_REASONS = {
+  POSTPONED: 'POSTPONED',
+  CANCELLED: 'CANCELLED',
+  REMOVED: 'REMOVED',           // Game no longer in slate
+  DATA_INVALID: 'DATA_INVALID', // Critical data integrity issue
+  DRASTIC_INJURY: 'DRASTIC_INJURY', // Both stars out + confidence collapse
+};
+
+// Get current time in Eastern Time
+const getCurrentTimeET = () => {
+  const now = new Date();
+  return new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+};
+
+// Get today's date string in ET (YYYY-MM-DD)
+const getTodayDateStringET = () => {
+  const etNow = getCurrentTimeET();
+  const year = etNow.getFullYear();
+  const month = String(etNow.getMonth() + 1).padStart(2, '0');
+  const day = String(etNow.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Check if it's past 6 AM ET (daily reset time)
+const isPastDailyResetTime = () => {
+  const etNow = getCurrentTimeET();
+  return etNow.getHours() >= 6;
+};
+
+// Load pick state from localStorage
+const loadPickState = (sport) => {
+  try {
+    const key = `${PICK_STATE_KEY}_${sport}`;
+    const saved = localStorage.getItem(key);
+    if (!saved) return null;
+    return JSON.parse(saved);
+  } catch (e) {
+    console.warn('[Gamenight] Failed to load pick state:', e);
+    return null;
+  }
+};
+
+// Save pick state to localStorage
+const savePickState = (sport, state) => {
+  try {
+    const key = `${PICK_STATE_KEY}_${sport}`;
+    localStorage.setItem(key, JSON.stringify(state));
+    console.log('[Gamenight] Pick state saved:', { sport, gameId: state.pickGameId, locked: state.pickLocked });
+  } catch (e) {
+    console.warn('[Gamenight] Failed to save pick state:', e);
+  }
+};
+
+// Create initial pick state
+const createPickState = (game, games, confidenceTier) => {
+  const now = new Date().toISOString();
+  return {
+    pickDateET: getTodayDateStringET(),
+    pickGameId: game.id,
+    pickGame: game,
+    pickLocked: false,
+    pickLockedReason: null,
+    pickChosenAt: now,
+    lastEvaluatedAt: now,
+    pickScoreAtSelection: game.score,
+    pickConfidenceAtSelection: confidenceTier?.tier || 'WEAK',
+    alternateGameIds: games.slice(1, 4).map(g => g.id), // Next 3 best games
+  };
+};
+
+// Check if pick state needs daily reset
+const needsDailyReset = (pickState) => {
+  if (!pickState) return true;
+  
+  const todayET = getTodayDateStringET();
+  
+  // Different day = needs reset
+  if (pickState.pickDateET !== todayET) return true;
+  
+  // Same day but before 6 AM when state was created, and now it's past 6 AM
+  // This handles edge case where state was created at 5:59 AM
+  if (!isPastDailyResetTime()) return false;
+  
+  // Check if pick was chosen before 6 AM today
+  const chosenAt = new Date(pickState.pickChosenAt);
+  const chosenHourET = new Date(chosenAt.toLocaleString('en-US', { timeZone: 'America/New_York' })).getHours();
+  if (chosenHourET < 6 && isPastDailyResetTime()) {
+    return true;
+  }
+  
+  return false;
+};
+
+// Check if pick should be locked (game started or in progress)
+const shouldLockPick = (pickState, currentGameData) => {
+  if (!pickState || !currentGameData) return { shouldLock: false };
+  
+  // Already locked
+  if (pickState.pickLocked) return { shouldLock: false };
+  
+  // Game is in progress
+  if (isGameInProgress(currentGameData.status)) {
+    return { shouldLock: true, reason: PICK_LOCK_REASONS.IN_PROGRESS };
+  }
+  
+  // Game has started (check start time vs current time)
+  if (currentGameData.startTime) {
+    const startTime = new Date(currentGameData.startTime).getTime();
+    const now = Date.now();
+    if (now >= startTime) {
+      return { shouldLock: true, reason: PICK_LOCK_REASONS.STARTED };
+    }
+  }
+  
+  // Game is final (shouldn't happen but handle it)
+  if (isGameFinal(currentGameData.status)) {
+    return { shouldLock: true, reason: PICK_LOCK_REASONS.STARTED };
+  }
+  
+  return { shouldLock: false };
+};
+
+// Check if pick should be overridden (drastic events only)
+const shouldOverridePick = (pickState, currentGameData, newBestGame, newConfidenceTier) => {
+  if (!pickState || !currentGameData) return { shouldOverride: false };
+  
+  // 1. Game is postponed or cancelled
+  if (isGamePostponedOrCancelled(currentGameData.status)) {
+    return { 
+      shouldOverride: true, 
+      reason: currentGameData.status.toUpperCase().includes('CANCEL') 
+        ? PICK_OVERRIDE_REASONS.CANCELLED 
+        : PICK_OVERRIDE_REASONS.POSTPONED,
+      message: `Pick updated: game ${getGameStatusText(currentGameData.status).toLowerCase()}`
+    };
+  }
+  
+  // 2. Game no longer in slate (removed/rescheduled)
+  if (!currentGameData.id) {
+    return { 
+      shouldOverride: true, 
+      reason: PICK_OVERRIDE_REASONS.REMOVED,
+      message: 'Pick updated: game removed from schedule'
+    };
+  }
+  
+  // 3. Critical data integrity issue
+  if (!currentGameData.homeTeam || !currentGameData.awayTeam) {
+    return { 
+      shouldOverride: true, 
+      reason: PICK_OVERRIDE_REASONS.DATA_INVALID,
+      message: 'Pick updated: data error'
+    };
+  }
+  
+  // 4. Drastic injury scenario (only if very strict conditions met)
+  // This is OPTIONAL and very conservative
+  if (newBestGame && newConfidenceTier) {
+    const oldScore = pickState.pickScoreAtSelection || 0;
+    const newBestScore = newBestGame.score || 0;
+    const scoreDrop = oldScore - (currentGameData.score || 0);
+    const scoreGap = newBestScore - (currentGameData.score || 0);
+    
+    // Must meet ALL conditions:
+    // - Score dropped by 20+ points
+    // - New best game is 20+ points better than current pick
+    // - New best game has SOLID or better confidence
+    // - Injury status is verified (we know this is real)
+    if (scoreDrop >= 20 && 
+        scoreGap >= 20 && 
+        ['CLEAR', 'SOLID'].includes(newConfidenceTier.tier) &&
+        currentGameData.validation?.injuryStatusVerified === true) {
+      return {
+        shouldOverride: true,
+        reason: PICK_OVERRIDE_REASONS.DRASTIC_INJURY,
+        message: 'Pick updated: significant lineup changes'
+      };
+    }
+  }
+  
+  return { shouldOverride: false };
+};
+
+// Evaluate and update pick state
+const evaluatePick = (pickState, games, confidenceTier, sport) => {
+  const now = new Date().toISOString();
+  const watchableGames = games.filter(g => isGameWatchable(g.status));
+  const rankedGames = rankGamesByWatchability(watchableGames);
+  
+  // No watchable games
+  if (rankedGames.length === 0) {
+    return {
+      pickState: null,
+      pick: null,
+      message: `All ${sport.toUpperCase()} games have finished`,
+      wasOverridden: false
+    };
+  }
+  
+  const newBestGame = rankedGames[0];
+  
+  // CASE 1: No existing pick state or needs daily reset
+  if (!pickState || needsDailyReset(pickState)) {
+    const newState = createPickState(newBestGame, rankedGames, confidenceTier);
+    savePickState(sport, newState);
+    console.log('[Gamenight] New pick selected:', { 
+      gameId: newBestGame.id, 
+      score: newBestGame.score,
+      reason: !pickState ? 'no_prior_state' : 'daily_reset'
+    });
+    return {
+      pickState: newState,
+      pick: newBestGame,
+      message: null,
+      wasOverridden: false,
+      isNewPick: true
+    };
+  }
+  
+  // Find current pick's game in today's slate
+  const currentPickGame = games.find(g => g.id === pickState.pickGameId);
+  
+  // CASE 2: Current pick game not found in slate
+  if (!currentPickGame) {
+    const override = shouldOverridePick(pickState, { id: null }, newBestGame, confidenceTier);
+    if (override.shouldOverride) {
+      const newState = createPickState(newBestGame, rankedGames, confidenceTier);
+      newState.overrideReason = override.reason;
+      newState.overrideMessage = override.message;
+      savePickState(sport, newState);
+      console.log('[Gamenight] Pick overridden (game removed):', { 
+        oldGameId: pickState.pickGameId,
+        newGameId: newBestGame.id 
+      });
+      return {
+        pickState: newState,
+        pick: newBestGame,
+        message: override.message,
+        wasOverridden: true
+      };
+    }
+  }
+  
+  // CASE 3: Check if pick should be locked
+  const lockCheck = shouldLockPick(pickState, currentPickGame);
+  if (lockCheck.shouldLock) {
+    const lockedState = {
+      ...pickState,
+      pickLocked: true,
+      pickLockedReason: lockCheck.reason,
+      pickGame: currentPickGame, // Update with latest game data
+      lastEvaluatedAt: now
+    };
+    savePickState(sport, lockedState);
+    console.log('[Gamenight] Pick locked:', { 
+      gameId: pickState.pickGameId, 
+      reason: lockCheck.reason 
+    });
+    return {
+      pickState: lockedState,
+      pick: currentPickGame,
+      message: null,
+      wasOverridden: false,
+      wasLocked: true
+    };
+  }
+  
+  // CASE 4: Pick is already locked - check for drastic override only
+  if (pickState.pickLocked) {
+    const override = shouldOverridePick(pickState, currentPickGame, newBestGame, confidenceTier);
+    if (override.shouldOverride) {
+      const newState = createPickState(newBestGame, rankedGames, confidenceTier);
+      newState.overrideReason = override.reason;
+      newState.overrideMessage = override.message;
+      savePickState(sport, newState);
+      console.log('[Gamenight] Locked pick overridden:', { 
+        oldGameId: pickState.pickGameId,
+        newGameId: newBestGame.id,
+        reason: override.reason
+      });
+      return {
+        pickState: newState,
+        pick: newBestGame,
+        message: override.message,
+        wasOverridden: true
+      };
+    }
+    
+    // Locked and no override needed - return current pick with updated game data
+    const updatedState = {
+      ...pickState,
+      pickGame: currentPickGame,
+      lastEvaluatedAt: now
+    };
+    savePickState(sport, updatedState);
+    return {
+      pickState: updatedState,
+      pick: currentPickGame,
+      message: null,
+      wasOverridden: false
+    };
+  }
+  
+  // CASE 5: Pick is NOT locked - can re-evaluate freely
+  // Pick the best watchable game
+  if (newBestGame.id !== pickState.pickGameId) {
+    // Better game available - update pick (before lock)
+    const newState = createPickState(newBestGame, rankedGames, confidenceTier);
+    savePickState(sport, newState);
+    console.log('[Gamenight] Pick re-evaluated (pre-lock):', { 
+      oldGameId: pickState.pickGameId,
+      newGameId: newBestGame.id,
+      oldScore: pickState.pickScoreAtSelection,
+      newScore: newBestGame.score
+    });
+    return {
+      pickState: newState,
+      pick: newBestGame,
+      message: null,
+      wasOverridden: false,
+      wasReEvaluated: true
+    };
+  }
+  
+  // Same game still best - update state with latest data
+  const updatedState = {
+    ...pickState,
+    pickGame: currentPickGame,
+    lastEvaluatedAt: now,
+    alternateGameIds: rankedGames.slice(1, 4).map(g => g.id)
+  };
+  savePickState(sport, updatedState);
+  return {
+    pickState: updatedState,
+    pick: currentPickGame,
+    message: null,
+    wasOverridden: false
+  };
+};
+
 // Get display text for game status
 const getGameStatusText = (status) => {
   if (!status) return 'Live';
@@ -2069,33 +2448,49 @@ const api = {
     }
   },
 
-  // Get tonight's pick (highest scored game from ESPN)
+  // Get tonight's pick (uses Pick State Machine)
   async getPicksToday(sport = 'nba') {
     const { games, error, dataFreshness } = await this.getGamesFromESPN(sport);
     if (error) {
       return { pick: null, message: error, dataFreshness };
     }
     if (games.length === 0) {
-      // P0 FIX: Distinguish between "no games scheduled" and "data issues"
       const message = dataFreshness?.status === 'OK' 
         ? `No ${sport.toUpperCase()} games today`
         : 'Unable to load games';
       return { pick: null, message, confidenceTier: calculateConfidenceTier([]), dataFreshness };
     }
-    const bestGame = games[0];
-    const confidenceTier = calculateConfidenceTier(games, dataFreshness); // HARD FIX #2: Pass freshness
+    
+    // Get watchable games for confidence calculation
+    const watchableGames = games.filter(g => isGameWatchable(g.status));
+    const confidenceTier = calculateConfidenceTier(watchableGames, dataFreshness);
+    
+    // Load existing pick state and evaluate
+    const existingPickState = loadPickState(sport);
+    const evaluation = evaluatePick(existingPickState, games, confidenceTier, sport);
+    
+    if (!evaluation.pick) {
+      return { 
+        pick: null, 
+        message: evaluation.message || `All ${sport.toUpperCase()} games have finished`,
+        confidenceTier: calculateConfidenceTier([]), 
+        dataFreshness 
+      };
+    }
+    
     return {
       pick: {
-        id: bestGame.id,
-        date: bestGame.gameDate,
-        score: bestGame.score,
-        whyWatch: bestGame.whyWatch,
+        id: evaluation.pick.id,
+        date: evaluation.pick.gameDate,
+        score: evaluation.pick.score,
+        whyWatch: evaluation.pick.whyWatch,
         source: 'live',
-        game: bestGame,
-        validation: bestGame.validation,
-        components: bestGame.components,
-        supportingReasons: bestGame.supportingReasons,
+        game: evaluation.pick,
+        validation: evaluation.pick.validation,
+        components: evaluation.pick.components,
+        supportingReasons: evaluation.pick.supportingReasons,
       },
+      pickState: evaluation.pickState,
       confidenceTier,
       dataFreshness
     };
@@ -2105,7 +2500,7 @@ const api = {
     return this.getGamesFromESPN(sport);
   },
 
-  // P0 FIX: Single fetch that returns both games and pick (eliminates double-fetch race condition)
+  // P0 FIX: Single fetch that returns both games and pick (with Pick State Machine)
   async getGamesAndPick(sport = 'nba') {
     const { games, error, dataFreshness } = await this.getGamesFromESPN(sport);
     
@@ -2113,6 +2508,7 @@ const api = {
       return { 
         games: [], 
         pick: null, 
+        pickState: null,
         message: error, 
         dataFreshness,
         confidenceTier: calculateConfidenceTier([])
@@ -2125,32 +2521,68 @@ const api = {
         : 'Unable to load games';
       return { 
         games: [], 
-        pick: null, 
+        pick: null,
+        pickState: null, 
         message, 
         dataFreshness,
         confidenceTier: calculateConfidenceTier([])
       };
     }
     
-    // Games are already ranked by watchability (from getGamesFromESPN)
-    const bestGame = games[0];
-    const confidenceTier = calculateConfidenceTier(games, dataFreshness);
+    // Get watchable games for confidence calculation
+    const watchableGames = games.filter(g => isGameWatchable(g.status));
+    const confidenceTier = calculateConfidenceTier(watchableGames, dataFreshness);
+    
+    // Load existing pick state
+    const existingPickState = loadPickState(sport);
+    
+    // Use Pick State Machine to evaluate/select pick
+    const evaluation = evaluatePick(existingPickState, games, confidenceTier, sport);
+    
+    // No watchable games left
+    if (!evaluation.pick) {
+      return {
+        games,
+        pick: null,
+        pickState: null,
+        message: evaluation.message || `All ${sport.toUpperCase()} games have finished`,
+        dataFreshness,
+        confidenceTier: calculateConfidenceTier([])
+      };
+    }
+    
+    // Get alternate games (next 2-3 best watchable games, excluding pick)
+    const alternateGames = watchableGames
+      .filter(g => g.id !== evaluation.pick.id)
+      .slice(0, 3);
     
     return {
-      games,
+      games, // Return ALL games for display (including finished)
       pick: {
-        id: bestGame.id,
-        date: bestGame.gameDate,
-        score: bestGame.score,
-        whyWatch: bestGame.whyWatch,
+        id: evaluation.pick.id,
+        date: evaluation.pick.gameDate,
+        score: evaluation.pick.score,
+        whyWatch: evaluation.pick.whyWatch,
         source: 'live',
-        game: bestGame,
-        validation: bestGame.validation,
-        components: bestGame.components,
-        supportingReasons: bestGame.supportingReasons,
+        game: evaluation.pick,
+        validation: evaluation.pick.validation,
+        components: evaluation.pick.components,
+        supportingReasons: evaluation.pick.supportingReasons,
       },
+      pickState: evaluation.pickState,
+      alternateGames,
       confidenceTier,
-      dataFreshness
+      dataFreshness,
+      // Metadata for debugging/UI
+      pickMetadata: {
+        wasOverridden: evaluation.wasOverridden,
+        wasReEvaluated: evaluation.wasReEvaluated,
+        wasLocked: evaluation.wasLocked,
+        isNewPick: evaluation.isNewPick,
+        overrideMessage: evaluation.message,
+        isLocked: evaluation.pickState?.pickLocked || false,
+        lockReason: evaluation.pickState?.pickLockedReason || null,
+      }
     };
   },
 
@@ -2980,6 +3412,9 @@ export default function GamenightApp() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [pick, setPick] = useState(null);
+  const [pickState, setPickState] = useState(null); // Pick State Machine state
+  const [pickMetadata, setPickMetadata] = useState(null); // Pick lifecycle metadata
+  const [alternateGames, setAlternateGames] = useState([]); // Next 2-3 best games
   const [games, setGames] = useState([]);
   const [challenge, setChallenge] = useState(null);
   const [userStats, setUserStats] = useState({ points: 0, streak: 0, accuracy: 0 });
@@ -3040,8 +3475,12 @@ export default function GamenightApp() {
         
         clearTimeout(timeoutId);
         
-        // Check for errors in responses
-        if (gamesAndPickRes.message && gamesAndPickRes.message !== `No ${activeSport.toUpperCase()} games today`) {
+        // Check for errors in responses (exclude valid states like "no games" or "all finished")
+        const validMessages = [
+          `No ${activeSport.toUpperCase()} games today`,
+          `All ${activeSport.toUpperCase()} games have finished`
+        ];
+        if (gamesAndPickRes.message && !validMessages.includes(gamesAndPickRes.message)) {
           setLoadError(gamesAndPickRes.message);
         }
         
@@ -3052,10 +3491,27 @@ export default function GamenightApp() {
         } : null;
         
         setPick(pickWithTier);
+        setPickState(gamesAndPickRes.pickState || null);
+        setPickMetadata(gamesAndPickRes.pickMetadata || null);
+        setAlternateGames(gamesAndPickRes.alternateGames || []);
         setGames(gamesAndPickRes.games || []);
         setChallenge(challengeRes.challenge);
         setUserStats(statsRes.stats || { points: 0, streak: 0, accuracy: 0 });
         setLastUpdated(new Date()); // Track when data was loaded
+        
+        // Log pick state changes for debugging
+        if (gamesAndPickRes.pickMetadata) {
+          const meta = gamesAndPickRes.pickMetadata;
+          if (meta.wasOverridden) {
+            console.log('[Gamenight UI] Pick was overridden:', meta.overrideMessage);
+          }
+          if (meta.wasLocked) {
+            console.log('[Gamenight UI] Pick was locked:', meta.lockReason);
+          }
+          if (meta.wasReEvaluated) {
+            console.log('[Gamenight UI] Pick was re-evaluated (pre-lock)');
+          }
+        }
         
         // Load user's prediction for this challenge
         if (challengeRes.challenge?.id) {
@@ -3148,7 +3604,10 @@ export default function GamenightApp() {
 
   // Derived data
   const bestGame = pick?.game;
-  const honorableMentions = games.filter(g => g.id !== bestGame?.id).slice(0, 3);
+  // Use alternateGames from Pick State Machine if available, otherwise compute from games
+  const honorableMentions = alternateGames.length > 0 
+    ? alternateGames 
+    : games.filter(g => g.id !== bestGame?.id).slice(0, 3);
   const leaderboard = [...LEADERBOARD, { name: 'You', points: userStats.points, streak: userStats.streak, isUser: true }]
     .sort((a, b) => b.points - a.points);
 
@@ -3288,6 +3747,12 @@ export default function GamenightApp() {
                           pick?.confidenceTier?.tier === 'SOLID' ? 'bg-orange-500' : 'bg-gray-500'
                         }`} />
                         {pick?.confidenceTier?.header || "Tonight's Pick"}
+                        {/* Lock icon when pick is frozen */}
+                        {pickMetadata?.isLocked && (
+                          <span className="ml-1 text-gray-500" title={`Pick locked: ${pickMetadata.lockReason}`}>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+                          </span>
+                        )}
                       </span>
                       {pick?.confidenceTier?.subtext && (
                         <div className="text-[10px] text-gray-500 mt-1">
@@ -3296,6 +3761,12 @@ export default function GamenightApp() {
                           {bestGame.validation?.fallbackMode && (
                             <span className="ml-1 text-yellow-600/70" title="Some game data unavailable">*</span>
                           )}
+                        </div>
+                      )}
+                      {/* Show override message if pick was changed due to drastic event */}
+                      {pickMetadata?.wasOverridden && pickMetadata?.overrideMessage && (
+                        <div className="text-[10px] text-yellow-500/80 mt-1 flex items-center gap-1">
+                          <span>⚠</span> {pickMetadata.overrideMessage}
                         </div>
                       )}
                     </div>
