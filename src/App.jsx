@@ -126,83 +126,210 @@ const getGameStatusText = (status) => {
 // WATCHABILITY ALGORITHM v2
 // ============================================
 
-// Star Player Database (by team abbreviation)
-const STAR_PLAYERS = {
-  // === NBA ===
-  NBA_MVP_TIER: ['LeBron James', 'Stephen Curry', 'Giannis Antetokounmpo', 'Nikola Jokic', 'Luka Doncic', 
+// ============================================
+// SPORT-ISOLATED PLAYER DATABASES
+// ============================================
+// CRITICAL: Each sport has its own isolated player data
+// NEVER share or cross-reference between sports
+// All players must be ACTIVE for current season
+
+// === NBA PLAYERS (2024-25 Season) ===
+const NBA_PLAYERS = {
+  MVP_TIER: ['LeBron James', 'Stephen Curry', 'Giannis Antetokounmpo', 'Nikola Jokic', 'Luka Doncic', 
              'Joel Embiid', 'Jayson Tatum', 'Kevin Durant', 'Shai Gilgeous-Alexander', 'Anthony Edwards'],
   
-  NBA_ALL_STAR: ['Donovan Mitchell', 'Trae Young', 'Tyrese Haliburton', 'Ja Morant', 'De\'Aaron Fox',
-                  'Devin Booker', 'Kyrie Irving', 'Jimmy Butler', 'Bam Adebayo', 'Paolo Banchero',
-                  'Jaylen Brown', 'Domantas Sabonis', 'LaMelo Ball', 'Cade Cunningham', 'Jalen Brunson',
-                  'Karl-Anthony Towns', 'Julius Randle', 'Damian Lillard', 'Victor Wembanyama', 'Zion Williamson',
-                  'Alperen Sengun', 'Franz Wagner', 'Scottie Barnes', 'Desmond Bane', 'Tyler Herro'],
+  ALL_STAR: ['Donovan Mitchell', 'Trae Young', 'Tyrese Haliburton', 'Ja Morant', 'De\'Aaron Fox',
+             'Devin Booker', 'Kyrie Irving', 'Jimmy Butler', 'Bam Adebayo', 'Paolo Banchero',
+             'Jaylen Brown', 'Domantas Sabonis', 'LaMelo Ball', 'Cade Cunningham', 'Jalen Brunson',
+             'Karl-Anthony Towns', 'Julius Randle', 'Damian Lillard', 'Victor Wembanyama', 'Zion Williamson',
+             'Alperen Sengun', 'Franz Wagner', 'Scottie Barnes', 'Desmond Bane', 'Tyler Herro'],
   
-  // === NFL ===
-  NFL_MVP_TIER: ['Patrick Mahomes', 'Josh Allen', 'Lamar Jackson', 'Joe Burrow', 'Jalen Hurts',
-                 'Travis Kelce', 'Tyreek Hill', 'Justin Jefferson', 'CeeDee Lamb', 'Ja\'Marr Chase'],
-  
-  NFL_ALL_PRO: ['Micah Parsons', 'T.J. Watt', 'Nick Bosa', 'Myles Garrett', 'Aaron Donald',
-                'Derrick Henry', 'Saquon Barkley', 'Christian McCaffrey', 'Davante Adams', 'A.J. Brown',
-                'Amon-Ra St. Brown', 'Garrett Wilson', 'George Kittle', 'Tua Tagovailoa', 'Dak Prescott',
-                'Jordan Love', 'Brock Purdy', 'C.J. Stroud', 'Caleb Williams'],
-  
-  // === MLB ===
-  MLB_MVP_TIER: ['Shohei Ohtani', 'Mookie Betts', 'Ronald Acuña Jr.', 'Corey Seager', 'Freddie Freeman',
-                 'Aaron Judge', 'Juan Soto', 'Bryce Harper', 'Mike Trout', 'Trea Turner'],
-  
-  MLB_ALL_STAR: ['Manny Machado', 'Fernando Tatis Jr.', 'Julio Rodriguez', 'Bobby Witt Jr.', 'Gunnar Henderson',
-                 'Marcus Semien', 'Jose Ramirez', 'Vladimir Guerrero Jr.', 'Bo Bichette', 'Rafael Devers',
-                 'Yordan Alvarez', 'Kyle Tucker', 'Corbin Carroll', 'Elly De La Cruz', 'Matt Olson'],
-  
-  // Team to Star mapping (primary stars per team) - NBA
+  // NBA Team abbreviations → Active stars (2024-25)
   TEAM_STARS: {
-    // NBA
-    'LAL': ['LeBron James'], 'GSW': ['Stephen Curry'], 'MIL': ['Giannis Antetokounmpo', 'Damian Lillard'],
-    'DEN': ['Nikola Jokic'], 'DAL': ['Luka Doncic', 'Kyrie Irving'], 'PHI': ['Joel Embiid'],
-    'BOS': ['Jayson Tatum', 'Jaylen Brown'], 'PHX': ['Kevin Durant', 'Devin Booker'],
-    'OKC': ['Shai Gilgeous-Alexander'], 'MIN': ['Anthony Edwards', 'Julius Randle'],
-    'CLE': ['Donovan Mitchell'], 'ATL': ['Trae Young'], 'IND': ['Tyrese Haliburton'],
-    'MEM': ['Ja Morant', 'Desmond Bane'], 'SAC': ['De\'Aaron Fox', 'Domantas Sabonis'],
-    'MIA': ['Jimmy Butler', 'Bam Adebayo', 'Tyler Herro'], 'ORL': ['Paolo Banchero', 'Franz Wagner'],
-    'CHA': ['LaMelo Ball'], 'DET': ['Cade Cunningham'], 'NY': ['Jalen Brunson', 'Karl-Anthony Towns'],
-    'NYK': ['Jalen Brunson', 'Karl-Anthony Towns'], 'SA': ['Victor Wembanyama'],
-    'NO': ['Zion Williamson'], 'NOP': ['Zion Williamson'], 'HOU': ['Alperen Sengun'],
-    'TOR': ['Scottie Barnes'], 'LAC': [], 'BKN': [], 'CHI': [], 'WAS': [], 'POR': [],
-    'UTAH': [], 'UTA': [],
-    
-    // NFL
-    'KC': ['Patrick Mahomes', 'Travis Kelce'], 'BUF': ['Josh Allen'], 'BAL': ['Lamar Jackson'],
-    'CIN': ['Joe Burrow', 'Ja\'Marr Chase'], 'SF': ['Brock Purdy', 'Nick Bosa'],
-    'MIA': ['Tyreek Hill', 'Tua Tagovailoa'], 'MIN': ['Justin Jefferson'],
-    'DAL': ['CeeDee Lamb', 'Micah Parsons', 'Dak Prescott'], 'PHI': ['Jalen Hurts', 'A.J. Brown', 'Saquon Barkley'],
-    'PIT': ['T.J. Watt'], 'CLE': ['Myles Garrett'], 'DET': ['Amon-Ra St. Brown'],
-    'GB': ['Jordan Love'], 'HOU': ['C.J. Stroud'], 'CHI': ['Caleb Williams'],
-    'NYJ': ['Garrett Wilson'], 'LV': ['Davante Adams'], 'TEN': ['Derrick Henry'],
-    'LAR': ['Aaron Donald'], 'SEA': [], 'ARI': [], 'CAR': [], 'TB': [], 'NO': [],
-    'ATL': [], 'NYG': [], 'WAS': [], 'NE': [], 'IND': [], 'JAX': [], 'DEN': [], 'LAC': [],
-    
-    // MLB
-    'LAD': ['Shohei Ohtani', 'Mookie Betts', 'Freddie Freeman'], 'NYY': ['Aaron Judge', 'Juan Soto'],
-    'ATL': ['Ronald Acuña Jr.', 'Matt Olson'], 'TEX': ['Corey Seager', 'Marcus Semien'],
-    'PHI': ['Bryce Harper', 'Trea Turner'], 'LAA': ['Mike Trout'],
-    'SD': ['Manny Machado', 'Fernando Tatis Jr.'], 'SEA': ['Julio Rodriguez'],
-    'KC': ['Bobby Witt Jr.'], 'BAL': ['Gunnar Henderson'], 'CLE': ['Jose Ramirez'],
-    'TOR': ['Vladimir Guerrero Jr.', 'Bo Bichette'], 'BOS': ['Rafael Devers'],
-    'HOU': ['Yordan Alvarez', 'Kyle Tucker'], 'ARI': ['Corbin Carroll'],
-    'CIN': ['Elly De La Cruz'], 'SF': [], 'CHC': [], 'STL': [], 'MIL': [], 'NYM': [],
-    'TB': [], 'MIN': [], 'DET': [], 'CHW': [], 'OAK': [], 'MIA': [], 'COL': [], 'PIT': [], 'WAS': []
+    'LAL': ['LeBron James'], 
+    'GSW': ['Stephen Curry'], 
+    'MIL': ['Giannis Antetokounmpo', 'Damian Lillard'],
+    'DEN': ['Nikola Jokic'], 
+    'DAL': ['Luka Doncic', 'Kyrie Irving'], 
+    'PHI': ['Joel Embiid'],
+    'BOS': ['Jayson Tatum', 'Jaylen Brown'], 
+    'PHX': ['Kevin Durant', 'Devin Booker'],
+    'OKC': ['Shai Gilgeous-Alexander'], 
+    'MIN': ['Anthony Edwards', 'Julius Randle'],
+    'CLE': ['Donovan Mitchell'], 
+    'ATL': ['Trae Young'], 
+    'IND': ['Tyrese Haliburton'],
+    'MEM': ['Ja Morant', 'Desmond Bane'], 
+    'SAC': ['De\'Aaron Fox', 'Domantas Sabonis'],
+    'MIA': ['Jimmy Butler', 'Bam Adebayo', 'Tyler Herro'], 
+    'ORL': ['Paolo Banchero', 'Franz Wagner'],
+    'CHA': ['LaMelo Ball'], 
+    'DET': ['Cade Cunningham'], 
+    'NYK': ['Jalen Brunson', 'Karl-Anthony Towns'],
+    'SAS': ['Victor Wembanyama'],
+    'NOP': ['Zion Williamson'], 
+    'HOU': ['Alperen Sengun'],
+    'TOR': ['Scottie Barnes'], 
+    'LAC': [], 
+    'BKN': [], 
+    'CHI': [], 
+    'WAS': [], 
+    'POR': [],
+    'UTA': []
   }
 };
 
-// Get star tier based on sport
-const getStarTiers = (sport) => {
-  if (sport === 'nfl') {
-    return { mvp: STAR_PLAYERS.NFL_MVP_TIER, allStar: STAR_PLAYERS.NFL_ALL_PRO };
-  } else if (sport === 'mlb') {
-    return { mvp: STAR_PLAYERS.MLB_MVP_TIER, allStar: STAR_PLAYERS.MLB_ALL_STAR };
+// === NFL PLAYERS (2024-25 Season) ===
+// NOTE: Aaron Donald RETIRED - removed from active roster
+const NFL_PLAYERS = {
+  MVP_TIER: ['Patrick Mahomes', 'Josh Allen', 'Lamar Jackson', 'Joe Burrow', 'Jalen Hurts',
+             'Travis Kelce', 'Tyreek Hill', 'Justin Jefferson', 'CeeDee Lamb', 'Ja\'Marr Chase'],
+  
+  ALL_PRO: ['Micah Parsons', 'T.J. Watt', 'Nick Bosa', 'Myles Garrett', 
+            'Derrick Henry', 'Saquon Barkley', 'Christian McCaffrey', 'Davante Adams', 'A.J. Brown',
+            'Amon-Ra St. Brown', 'Garrett Wilson', 'George Kittle', 'Tua Tagovailoa', 'Dak Prescott',
+            'Jordan Love', 'Brock Purdy', 'C.J. Stroud', 'Caleb Williams'],
+  
+  // NFL Team abbreviations → Active stars (2024-25)
+  TEAM_STARS: {
+    'KC': ['Patrick Mahomes', 'Travis Kelce'], 
+    'BUF': ['Josh Allen'], 
+    'BAL': ['Lamar Jackson'],
+    'CIN': ['Joe Burrow', 'Ja\'Marr Chase'], 
+    'SF': ['Brock Purdy', 'Nick Bosa', 'Christian McCaffrey'],
+    'MIA': ['Tyreek Hill', 'Tua Tagovailoa'], 
+    'MIN': ['Justin Jefferson'],
+    'DAL': ['CeeDee Lamb', 'Micah Parsons', 'Dak Prescott'], 
+    'PHI': ['Jalen Hurts', 'A.J. Brown', 'Saquon Barkley'],
+    'PIT': ['T.J. Watt'], 
+    'CLE': ['Myles Garrett'], 
+    'DET': ['Amon-Ra St. Brown'],
+    'GB': ['Jordan Love'], 
+    'HOU': ['C.J. Stroud'], 
+    'CHI': ['Caleb Williams'],
+    'NYJ': ['Garrett Wilson'], 
+    'LV': ['Davante Adams'], 
+    'TEN': ['Derrick Henry'],
+    'LAR': [], // Aaron Donald RETIRED - no current stars
+    'SEA': [], // No current star-tier players
+    'ARI': [], 
+    'CAR': [], 
+    'TB': [], 
+    'NO': [],
+    'ATL': [], 
+    'NYG': [], 
+    'WAS': [], 
+    'NE': [], 
+    'IND': [], 
+    'JAX': [], 
+    'DEN': [], 
+    'LAC': []
+  },
+  
+  // QB mapping for NFL-specific logic
+  TEAM_QBS: {
+    'KC': 'Patrick Mahomes', 'BUF': 'Josh Allen', 'BAL': 'Lamar Jackson', 'CIN': 'Joe Burrow',
+    'PHI': 'Jalen Hurts', 'MIA': 'Tua Tagovailoa', 'DAL': 'Dak Prescott', 'GB': 'Jordan Love',
+    'SF': 'Brock Purdy', 'HOU': 'C.J. Stroud', 'CHI': 'Caleb Williams',
+    // Teams without star QBs
+    'MIN': null, 'DET': null, 'CLE': null, 'PIT': null, 'NYJ': null, 'LV': null, 'TEN': null,
+    'LAR': null, 'SEA': null, 'ARI': null, 'CAR': null, 'TB': null, 'NO': null, 'ATL': null,
+    'NYG': null, 'WAS': null, 'NE': null, 'IND': null, 'JAX': null, 'DEN': null, 'LAC': null
   }
-  return { mvp: STAR_PLAYERS.NBA_MVP_TIER, allStar: STAR_PLAYERS.NBA_ALL_STAR };
+};
+
+// === MLB PLAYERS (2024 Season) ===
+const MLB_PLAYERS = {
+  MVP_TIER: ['Shohei Ohtani', 'Mookie Betts', 'Ronald Acuña Jr.', 'Corey Seager', 'Freddie Freeman',
+             'Aaron Judge', 'Juan Soto', 'Bryce Harper', 'Mike Trout', 'Trea Turner'],
+  
+  ALL_STAR: ['Manny Machado', 'Fernando Tatis Jr.', 'Julio Rodriguez', 'Bobby Witt Jr.', 'Gunnar Henderson',
+             'Marcus Semien', 'Jose Ramirez', 'Vladimir Guerrero Jr.', 'Bo Bichette', 'Rafael Devers',
+             'Yordan Alvarez', 'Kyle Tucker', 'Corbin Carroll', 'Elly De La Cruz', 'Matt Olson'],
+  
+  ACE_PITCHERS: [
+    'Gerrit Cole', 'Spencer Strider', 'Zack Wheeler', 'Corbin Burnes',
+    'Dylan Cease', 'Tarik Skubal', 'Logan Webb', 'Yoshinobu Yamamoto', 'Tyler Glasnow',
+    'Zac Gallen', 'Kevin Gausman', 'Blake Snell', 'Justin Verlander', 'Max Scherzer'
+  ],
+  
+  // MLB Team abbreviations → Active stars (2024)
+  TEAM_STARS: {
+    'LAD': ['Shohei Ohtani', 'Mookie Betts', 'Freddie Freeman'], 
+    'NYY': ['Aaron Judge', 'Juan Soto'],
+    'ATL': ['Ronald Acuña Jr.', 'Matt Olson'], 
+    'TEX': ['Corey Seager', 'Marcus Semien'],
+    'PHI': ['Bryce Harper', 'Trea Turner'], 
+    'LAA': ['Mike Trout'],
+    'SD': ['Manny Machado', 'Fernando Tatis Jr.'], 
+    'SEA': ['Julio Rodriguez'],
+    'KC': ['Bobby Witt Jr.'], 
+    'BAL': ['Gunnar Henderson'], 
+    'CLE': ['Jose Ramirez'],
+    'TOR': ['Vladimir Guerrero Jr.', 'Bo Bichette'], 
+    'BOS': ['Rafael Devers'],
+    'HOU': ['Yordan Alvarez', 'Kyle Tucker'], 
+    'ARI': ['Corbin Carroll'],
+    'CIN': ['Elly De La Cruz'], 
+    'SF': [], 
+    'CHC': [], 
+    'STL': [], 
+    'MIL': [], 
+    'NYM': [],
+    'TB': [], 
+    'MIN': [], 
+    'DET': [], 
+    'CHW': [], 
+    'OAK': [], 
+    'MIA': [], 
+    'COL': [], 
+    'PIT': [], 
+    'WAS': []
+  }
+};
+
+// ============================================
+// SPORT-SCOPED PLAYER LOOKUP (CRITICAL)
+// ============================================
+// This is the ONLY way to get players for a game
+// Enforces complete sport isolation
+
+const getPlayersForTeam = (teamAbbr, sport) => {
+  // HARD GUARD: Must have valid sport
+  if (!sport || !teamAbbr) return [];
+  
+  // Sport-specific lookup - NO CROSS-CONTAMINATION
+  if (sport === 'nba') {
+    return NBA_PLAYERS.TEAM_STARS[teamAbbr] || [];
+  } else if (sport === 'nfl') {
+    return NFL_PLAYERS.TEAM_STARS[teamAbbr] || [];
+  } else if (sport === 'mlb') {
+    return MLB_PLAYERS.TEAM_STARS[teamAbbr] || [];
+  }
+  
+  // Unknown sport - return empty (fail safe)
+  return [];
+};
+
+const getStarTiers = (sport) => {
+  // HARD GUARD: Sport-specific tiers only
+  if (sport === 'nfl') {
+    return { mvp: NFL_PLAYERS.MVP_TIER, allStar: NFL_PLAYERS.ALL_PRO };
+  } else if (sport === 'mlb') {
+    return { mvp: MLB_PLAYERS.MVP_TIER, allStar: MLB_PLAYERS.ALL_STAR };
+  } else if (sport === 'nba') {
+    return { mvp: NBA_PLAYERS.MVP_TIER, allStar: NBA_PLAYERS.ALL_STAR };
+  }
+  // Unknown sport - return empty arrays (fail safe)
+  return { mvp: [], allStar: [] };
+};
+
+const getNFLTeamQB = (teamAbbr) => {
+  return NFL_PLAYERS.TEAM_QBS[teamAbbr] || null;
+};
+
+const isMLBAcePitcher = (pitcherName) => {
+  return MLB_PLAYERS.ACE_PITCHERS.includes(pitcherName);
 };
 
 // Historic Rivalries (all sports)
@@ -416,46 +543,19 @@ const calculateStakesScore = (homeTeam, awayTeam, validation, sport = 'nba') => 
 // SPORT-SPECIFIC KEY PLAYER DATA
 // ============================================
 
-// NFL Position-based player categorization
-const NFL_PLAYERS_BY_POSITION = {
-  QB: ['Patrick Mahomes', 'Josh Allen', 'Lamar Jackson', 'Joe Burrow', 'Jalen Hurts', 
-       'Tua Tagovailoa', 'Dak Prescott', 'Jordan Love', 'Brock Purdy', 'C.J. Stroud', 'Caleb Williams'],
-  RB: ['Derrick Henry', 'Saquon Barkley', 'Christian McCaffrey'],
-  WR: ['Tyreek Hill', 'Justin Jefferson', 'CeeDee Lamb', 'Ja\'Marr Chase', 'A.J. Brown',
-       'Amon-Ra St. Brown', 'Garrett Wilson', 'Davante Adams'],
-  TE: ['Travis Kelce', 'George Kittle'],
-  DEF: ['Micah Parsons', 'T.J. Watt', 'Nick Bosa', 'Myles Garrett', 'Aaron Donald']
-};
-
-// NFL Team to QB mapping (primary QB per team)
-const NFL_TEAM_QBS = {
-  'KC': 'Patrick Mahomes', 'BUF': 'Josh Allen', 'BAL': 'Lamar Jackson', 'CIN': 'Joe Burrow',
-  'PHI': 'Jalen Hurts', 'MIA': 'Tua Tagovailoa', 'DAL': 'Dak Prescott', 'GB': 'Jordan Love',
-  'SF': 'Brock Purdy', 'HOU': 'C.J. Stroud', 'CHI': 'Caleb Williams',
-  // Teams without star QBs
-  'MIN': null, 'DET': null, 'CLE': null, 'PIT': null, 'NYJ': null, 'LV': null, 'TEN': null,
-  'LAR': null, 'SEA': null, 'ARI': null, 'CAR': null, 'TB': null, 'NO': null, 'ATL': null,
-  'NYG': null, 'WAS': null, 'NE': null, 'IND': null, 'JAX': null, 'DEN': null, 'LAC': null
-};
-
-// NFL Team to Key Defensive Player
-const NFL_TEAM_DEF_STARS = {
-  'DAL': 'Micah Parsons', 'PIT': 'T.J. Watt', 'SF': 'Nick Bosa', 'CLE': 'Myles Garrett', 'LAR': 'Aaron Donald'
-};
-
-// MLB Ace Pitchers (for when we have starter data)
-const MLB_ACE_PITCHERS = [
-  'Shohei Ohtani', 'Gerrit Cole', 'Spencer Strider', 'Zack Wheeler', 'Corbin Burnes',
-  'Dylan Cease', 'Tarik Skubal', 'Logan Webb', 'Yoshinobu Yamamoto', 'Tyler Glasnow',
-  'Zac Gallen', 'Kevin Gausman', 'Blake Snell', 'Justin Verlander', 'Max Scherzer'
-];
-
 // ============================================
 // 2. STAR/KEY PLAYER SCORE - SPORT SPECIFIC
 // ============================================
 // CRITICAL: Must NEVER produce same-team "vs" matchups in ANY sport
+// CRITICAL: Must ONLY use sport-scoped player data (no cross-contamination)
 
 const calculateStarPowerScore = (homeTeam, awayTeam, sport = 'nba', sportData = {}) => {
+  // HARD GUARD: Validate sport parameter
+  if (!sport || !['nba', 'nfl', 'mlb'].includes(sport)) {
+    console.warn('Invalid sport for star power calculation:', sport);
+    return { score: 5, stars: [], homeStars: [], awayStars: [], matchupType: 'none', matchupText: '', matchupLabel: '', reason: '' };
+  }
+  
   // Route to sport-specific calculator
   if (sport === 'nfl') {
     return calculateNFLKeyPlayers(homeTeam, awayTeam);
@@ -470,8 +570,9 @@ const calculateStarPowerScore = (homeTeam, awayTeam, sport = 'nba', sportData = 
 // NBA Star Power Calculator
 // ============================================
 const calculateNBAStarPower = (homeTeam, awayTeam) => {
-  const homeStars = STAR_PLAYERS.TEAM_STARS[homeTeam.abbreviation] || [];
-  const awayStars = STAR_PLAYERS.TEAM_STARS[awayTeam.abbreviation] || [];
+  // SPORT-SCOPED: Only get NBA players
+  const homeStars = getPlayersForTeam(homeTeam.abbreviation, 'nba');
+  const awayStars = getPlayersForTeam(awayTeam.abbreviation, 'nba');
   
   const { mvp, allStar } = getStarTiers('nba');
   
@@ -518,35 +619,31 @@ const calculateNBAStarPower = (homeTeam, awayTeam) => {
 // ============================================
 // RULE: Always show either:
 //   1. Two players from DIFFERENT teams ("Player A vs Player B")
-//   2. ONE player only ("Features Player A")
+//   2. ONE player only
 // NEVER show two players from the same team
+// CRITICAL: Only uses NFL_PLAYERS data (no cross-sport contamination)
 const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
   const homeAbbr = homeTeam.abbreviation;
   const awayAbbr = awayTeam.abbreviation;
   
-  // Priority 1: QB vs QB (if both teams have notable QBs)
-  const homeQB = NFL_TEAM_QBS[homeAbbr] || null;
-  const awayQB = NFL_TEAM_QBS[awayAbbr] || null;
+  // SPORT-SCOPED: Only get NFL players
+  const homeQB = getNFLTeamQB(homeAbbr);
+  const awayQB = getNFLTeamQB(awayAbbr);
   
-  // Get team stars from database
-  const homeStars = STAR_PLAYERS.TEAM_STARS[homeAbbr] || [];
-  const awayStars = STAR_PLAYERS.TEAM_STARS[awayAbbr] || [];
+  // Get NFL-only team stars
+  const homeStars = getPlayersForTeam(homeAbbr, 'nfl');
+  const awayStars = getPlayersForTeam(awayAbbr, 'nfl');
   
-  // Categorize home team players by position
-  const homeOffense = homeStars.filter(p => 
-    NFL_PLAYERS_BY_POSITION.RB.includes(p) || 
-    NFL_PLAYERS_BY_POSITION.WR.includes(p) || 
-    NFL_PLAYERS_BY_POSITION.TE.includes(p)
+  // Get NFL star tiers for categorization
+  const { mvp, allStar } = getStarTiers('nfl');
+  
+  // Categorize by type (using NFL-specific tier lists)
+  const homeDefense = homeStars.filter(p => 
+    ['Micah Parsons', 'T.J. Watt', 'Nick Bosa', 'Myles Garrett'].includes(p)
   );
-  const homeDefense = homeStars.filter(p => NFL_PLAYERS_BY_POSITION.DEF.includes(p));
-  
-  // Categorize away team players by position
-  const awayOffense = awayStars.filter(p => 
-    NFL_PLAYERS_BY_POSITION.RB.includes(p) || 
-    NFL_PLAYERS_BY_POSITION.WR.includes(p) || 
-    NFL_PLAYERS_BY_POSITION.TE.includes(p)
+  const awayDefense = awayStars.filter(p => 
+    ['Micah Parsons', 'T.J. Watt', 'Nick Bosa', 'Myles Garrett'].includes(p)
   );
-  const awayDefense = awayStars.filter(p => NFL_PLAYERS_BY_POSITION.DEF.includes(p));
   
   let score = 5;
   let matchupType = 'none';
@@ -565,7 +662,6 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
   // CASE 2: One team has QB, other has defensive star (TWO players, DIFFERENT teams)
   else if ((homeQB && awayDefense.length > 0) || (awayQB && homeDefense.length > 0)) {
     score = 15;
-    // Only set 'vs' AFTER validating different teams
     if (homeQB && awayDefense.length > 0 && homeAbbr !== awayAbbr) {
       matchupType = 'vs';
       matchupText = `${awayDefense[0]} vs ${homeQB}`;
@@ -580,7 +676,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
       // Fallback - show single player only
       matchupType = 'featured';
       const singleStar = homeQB || awayQB || homeDefense[0] || awayDefense[0];
-      matchupText = `${singleStar}`;
+      matchupText = singleStar;
       matchupLabel = 'Featured Player';
       displayedStars = [singleStar];
     }
@@ -590,7 +686,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     score = 12;
     matchupType = 'vs';
     matchupText = `${awayStars[0]} vs ${homeStars[0]}`;
-    matchupLabel = 'Key Matchup'; // Not "QB Matchup" - reserved for QB vs QB only
+    matchupLabel = 'Key Matchup';
     displayedStars = [awayStars[0], homeStars[0]];
   }
   // CASE 4: Only one team has star QB (ONE player only)
@@ -598,7 +694,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     score = 13;
     matchupType = 'featured';
     const qbName = awayQB || homeQB;
-    matchupText = `${qbName}`;
+    matchupText = qbName;
     matchupLabel = 'Featured QB';
     displayedStars = [qbName];
   }
@@ -607,7 +703,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     score = 8;
     matchupType = 'featured';
     const singleStar = awayStars[0] || homeStars[0];
-    matchupText = `${singleStar}`;
+    matchupText = singleStar;
     matchupLabel = 'Featured Player';
     displayedStars = [singleStar];
   }
@@ -643,8 +739,9 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
 //
 // RULE: Always show either:
 //   - Two players from DIFFERENT teams ("Player A vs Player B")
-//   - ONE player only ("Features Player A")
+//   - ONE player only
 //   - NEVER show two players from the same team
+// CRITICAL: Only uses MLB_PLAYERS data (no cross-sport contamination)
 const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitcher = null) => {
   const homeAbbr = homeTeam.abbreviation;
   const awayAbbr = awayTeam.abbreviation;
@@ -658,9 +755,9 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
   // ===== PRIORITY 1: Starting Pitcher vs Starting Pitcher =====
   // This is the PRIMARY MLB matchup - pitching drives watchability
   if (homePitcher && awayPitcher && homeAbbr !== awayAbbr) {
-    // Check if either pitcher is an ace for scoring bonus
-    const isHomeAce = MLB_ACE_PITCHERS.includes(homePitcher);
-    const isAwayAce = MLB_ACE_PITCHERS.includes(awayPitcher);
+    // Check if either pitcher is an ace for scoring bonus (using sport-scoped function)
+    const isHomeAce = isMLBAcePitcher(homePitcher);
+    const isAwayAce = isMLBAcePitcher(awayPitcher);
     
     if (isHomeAce && isAwayAce) {
       score = 20; // Ace vs Ace is premium
@@ -690,7 +787,7 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
   // ===== PRIORITY 2: Featured Starting Pitcher (one confirmed) =====
   if (homePitcher || awayPitcher) {
     const pitcher = awayPitcher || homePitcher;
-    const isAce = MLB_ACE_PITCHERS.includes(pitcher);
+    const isAce = isMLBAcePitcher(pitcher);
     
     score = isAce ? 15 : 12;
     matchupType = 'featured';
@@ -714,12 +811,13 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
   // Only used when starting pitcher data is not available
   // MVP tier is used for SCORING BOOST only, not primary selection
   
-  const homeStars = STAR_PLAYERS.TEAM_STARS[homeAbbr] || [];
-  const awayStars = STAR_PLAYERS.TEAM_STARS[awayAbbr] || [];
+  // SPORT-SCOPED: Only get MLB players
+  const homeStars = getPlayersForTeam(homeAbbr, 'mlb');
+  const awayStars = getPlayersForTeam(awayAbbr, 'mlb');
   
   // Filter to batters only (exclude pitchers from batter list, except Ohtani who hits too)
-  const homeBatters = homeStars.filter(p => !MLB_ACE_PITCHERS.includes(p) || p === 'Shohei Ohtani');
-  const awayBatters = awayStars.filter(p => !MLB_ACE_PITCHERS.includes(p) || p === 'Shohei Ohtani');
+  const homeBatters = homeStars.filter(p => !isMLBAcePitcher(p) || p === 'Shohei Ohtani');
+  const awayBatters = awayStars.filter(p => !isMLBAcePitcher(p) || p === 'Shohei Ohtani');
   
   // Get MVP tier for SCORING BONUS only (not selection priority)
   const { mvp } = getStarTiers('mlb');
@@ -754,7 +852,7 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
     
     score = isMVP ? 10 : 8;
     matchupType = 'featured';
-    matchupText = `${singleBatter}`;
+    matchupText = singleBatter;
     matchupLabel = 'Featured Batter';
     displayedStars = [singleBatter];
   }
