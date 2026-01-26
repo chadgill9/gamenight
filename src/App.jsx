@@ -1648,8 +1648,8 @@ export default function GamenightApp() {
                                 ) : (
                                   <div className="text-xs">
                                     <span className="font-bold">{g.awayScore} - {g.homeScore}</span>
-                                    <span className={`ml-2 ${g.status === 'STATUS_FINAL' ? 'text-gray-500' : 'text-red-400'}`}>
-                                      {g.status === 'STATUS_FINAL' ? 'Final' : 'Live'}
+                                    <span className={`ml-2 ${isGameFinal(g.status) ? 'text-gray-500' : 'text-red-400'}`}>
+                                      {getGameStatusText(g.status)}
                                     </span>
                                   </div>
                                 )}
