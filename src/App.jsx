@@ -130,6 +130,28 @@ const getGameStatusText = (status) => {
 
 // Get today's date in Eastern Time (sports standard timezone)
 // Returns YYYY-MM-DD format to match ESPN gameDate format
+// ============================================
+// CENTRALIZED GAME RANKING (P0 FIX)
+// ============================================
+// This function is the ONLY place games should be sorted.
+// Status NEVER affects ranking. Only score and startTime (as tie-breaker).
+const rankGamesByWatchability = (games) => {
+  if (!games || !Array.isArray(games)) return [];
+  
+  // CRITICAL: Create new array to avoid mutation
+  return [...games].sort((a, b) => {
+    // PRIMARY: watchabilityScore (descending)
+    const scoreDiff = (b.score || 0) - (a.score || 0);
+    if (scoreDiff !== 0) return scoreDiff;
+    
+    // SECONDARY (tie-break only): scheduled start time (earlier first)
+    // This ensures stable ordering when scores are equal
+    const timeA = new Date(a.startTime || 0).getTime();
+    const timeB = new Date(b.startTime || 0).getTime();
+    return timeA - timeB;
+  });
+};
+
 const getTodayDateET = () => {
   const now = new Date();
   // Format in Eastern Time
@@ -1614,7 +1636,8 @@ const calculateConfidenceTier = (games, dataFreshness = null) => {
     };
   }
   
-  const sortedGames = [...games].sort((a, b) => b.score - a.score);
+  // P0 FIX: Use centralized ranking function (no status influence, stable sort)
+  const sortedGames = rankGamesByWatchability(games);
   const topScore = sortedGames[0]?.score || 0;
   const secondScore = sortedGames[1]?.score || 0;
   const scoreLead = topScore - secondScore;
@@ -2019,8 +2042,8 @@ const api = {
         return validation.isToday;
       });
       
-      // Sort by score (highest first)
-      const games = todaysGames.sort((a, b) => b.score - a.score);
+      // P0 FIX: Use centralized ranking function (no mutation, stable sort)
+      const games = rankGamesByWatchability(todaysGames);
       
       // Build data freshness metadata
       const dataFreshness = {
@@ -2080,6 +2103,55 @@ const api = {
 
   async getGamesToday(sport = 'nba') {
     return this.getGamesFromESPN(sport);
+  },
+
+  // P0 FIX: Single fetch that returns both games and pick (eliminates double-fetch race condition)
+  async getGamesAndPick(sport = 'nba') {
+    const { games, error, dataFreshness } = await this.getGamesFromESPN(sport);
+    
+    if (error) {
+      return { 
+        games: [], 
+        pick: null, 
+        message: error, 
+        dataFreshness,
+        confidenceTier: calculateConfidenceTier([])
+      };
+    }
+    
+    if (games.length === 0) {
+      const message = dataFreshness?.status === 'OK' 
+        ? `No ${sport.toUpperCase()} games today`
+        : 'Unable to load games';
+      return { 
+        games: [], 
+        pick: null, 
+        message, 
+        dataFreshness,
+        confidenceTier: calculateConfidenceTier([])
+      };
+    }
+    
+    // Games are already ranked by watchability (from getGamesFromESPN)
+    const bestGame = games[0];
+    const confidenceTier = calculateConfidenceTier(games, dataFreshness);
+    
+    return {
+      games,
+      pick: {
+        id: bestGame.id,
+        date: bestGame.gameDate,
+        score: bestGame.score,
+        whyWatch: bestGame.whyWatch,
+        source: 'live',
+        game: bestGame,
+        validation: bestGame.validation,
+        components: bestGame.components,
+        supportingReasons: bestGame.supportingReasons,
+      },
+      confidenceTier,
+      dataFreshness
+    };
   },
 
   async getTeam(teamId, sport = 'nba') {
@@ -2959,9 +3031,9 @@ export default function GamenightApp() {
       }, 15000);
       
       try {
-        const [pickRes, gamesRes, challengeRes, statsRes] = await Promise.all([
-          api.getPicksToday(activeSport),
-          api.getGamesToday(activeSport),
+        // P0 FIX: Single fetch for games and pick (eliminates double-fetch race condition)
+        const [gamesAndPickRes, challengeRes, statsRes] = await Promise.all([
+          api.getGamesAndPick(activeSport),
           api.getChallengeToday(activeSport),
           api.getUserStats()
         ]);
@@ -2969,20 +3041,18 @@ export default function GamenightApp() {
         clearTimeout(timeoutId);
         
         // Check for errors in responses
-        if (gamesRes.error) {
-          setLoadError(gamesRes.error);
-        } else if (pickRes.message && pickRes.message !== 'No games today') {
-          setLoadError(pickRes.message);
+        if (gamesAndPickRes.message && gamesAndPickRes.message !== `No ${activeSport.toUpperCase()} games today`) {
+          setLoadError(gamesAndPickRes.message);
         }
         
         // Include confidenceTier in pick object
-        const pickWithTier = pickRes.pick ? {
-          ...pickRes.pick,
-          confidenceTier: pickRes.confidenceTier
+        const pickWithTier = gamesAndPickRes.pick ? {
+          ...gamesAndPickRes.pick,
+          confidenceTier: gamesAndPickRes.confidenceTier
         } : null;
         
         setPick(pickWithTier);
-        setGames(gamesRes.games || []);
+        setGames(gamesAndPickRes.games || []);
         setChallenge(challengeRes.challenge);
         setUserStats(statsRes.stats || { points: 0, streak: 0, accuracy: 0 });
         setLastUpdated(new Date()); // Track when data was loaded
