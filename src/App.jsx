@@ -864,10 +864,145 @@ const updateInjuryCache = (teamAbbr, sport, roster) => {
   console.log(`[Gamenight] Roster cache updated for ${rosterKey}: ${roster.length} players`);
 };
 
+// ============================================
+// MULTI-SIGNAL STAR QUALIFICATION SYSTEM
+// ============================================
+// A player is a Notable Star if ANY TWO of the following signals are true.
+// This is DATA-DRIVEN, not NAME-DRIVEN.
+// 
+// NBA Signals:
+// 1. STATIC_TIER: Listed in MVP_TIER or ALL_STAR (historical recognition)
+// 2. TEAM_STARS: Listed in TEAM_STARS for their team (curated but updatable)
+// 3. MINUTES_LEADER: Top 2 in team minutes (derived from roster data)
+// 4. ESPN_STARTER: Marked as starter by ESPN
+// 5. USAGE_LEADER: High usage/scoring role (derived from stats when available)
+//
+// Requires 2+ signals to qualify as Notable Star.
+// Single signal = "Emerging Player" (lower confidence)
+
+const STAR_SIGNAL_TYPES = {
+  STATIC_TIER: 'STATIC_TIER',       // MVP_TIER or ALL_STAR list
+  TEAM_STARS: 'TEAM_STARS',         // Team-specific star list
+  MINUTES_LEADER: 'MINUTES_LEADER', // Top 2 in team minutes
+  ESPN_STARTER: 'ESPN_STARTER',     // ESPN marked as starter
+  USAGE_LEADER: 'USAGE_LEADER',     // High usage/points per game
+};
+
+// Evaluate star signals for a player
+// Returns: { signals: string[], signalCount: number, isNotableStar: boolean, isEmergingPlayer: boolean }
+const evaluateStarSignals = (playerName, teamAbbr, sport, rosterContext = {}) => {
+  const signals = [];
+  
+  if (!playerName || !teamAbbr || !sport) {
+    return { signals: [], signalCount: 0, isNotableStar: false, isEmergingPlayer: false };
+  }
+  
+  // Signal 1: STATIC_TIER - Historical All-Star/MVP recognition
+  const { mvp, allStar } = getStarTiers(sport);
+  if (mvp.includes(playerName) || allStar.includes(playerName)) {
+    signals.push(STAR_SIGNAL_TYPES.STATIC_TIER);
+  }
+  
+  // Signal 2: TEAM_STARS - Curated team star list
+  const teamStars = getPlayersForTeam(teamAbbr, sport);
+  if (teamStars.includes(playerName)) {
+    signals.push(STAR_SIGNAL_TYPES.TEAM_STARS);
+  }
+  
+  // Signal 3: MINUTES_LEADER - From roster context (if available)
+  // This is data-driven from actual ESPN roster data
+  if (rosterContext.minutesLeaders && rosterContext.minutesLeaders.includes(playerName)) {
+    signals.push(STAR_SIGNAL_TYPES.MINUTES_LEADER);
+  }
+  
+  // Signal 4: ESPN_STARTER - From roster context (if available)
+  if (rosterContext.espnStarters && rosterContext.espnStarters.includes(playerName)) {
+    signals.push(STAR_SIGNAL_TYPES.ESPN_STARTER);
+  }
+  
+  // Signal 5: USAGE_LEADER - High usage/PPG (if stats available)
+  if (rosterContext.usageLeaders && rosterContext.usageLeaders.includes(playerName)) {
+    signals.push(STAR_SIGNAL_TYPES.USAGE_LEADER);
+  }
+  
+  const signalCount = signals.length;
+  
+  return {
+    signals,
+    signalCount,
+    isNotableStar: signalCount >= 2,      // 2+ signals = Notable Star
+    isEmergingPlayer: signalCount === 1,  // 1 signal = Emerging (lower confidence)
+    playerName,
+    teamAbbr
+  };
+};
+
+// Build roster context for star evaluation (extracts data signals from roster)
+const buildRosterContext = (roster, teamAbbr, sport) => {
+  if (!roster || !Array.isArray(roster) || roster.length === 0) {
+    return {};
+  }
+  
+  // Extract ESPN-marked starters
+  const espnStarters = roster
+    .filter(p => p.isStarter)
+    .map(p => p.name || p.displayName)
+    .filter(Boolean);
+  
+  // Extract minutes leaders (top 2 by experience as proxy, or actual minutes if available)
+  // ESPN roster data includes experience.years which correlates with minutes for starters
+  const sortedByMinutes = [...roster]
+    .filter(p => p.name || p.displayName)
+    .sort((a, b) => {
+      // Use actual minutes if available, otherwise use experience as proxy
+      const aMinutes = a.avgMinutes || a.minutes || (a.experience || 0) * 10;
+      const bMinutes = b.avgMinutes || b.minutes || (b.experience || 0) * 10;
+      return bMinutes - aMinutes;
+    });
+  
+  const minutesLeaders = sortedByMinutes
+    .slice(0, 2)
+    .map(p => p.name || p.displayName);
+  
+  // Extract usage leaders (top 2 by PPG/usage if stats available)
+  const sortedByUsage = [...roster]
+    .filter(p => (p.name || p.displayName) && (p.ppg || p.points || p.usage))
+    .sort((a, b) => {
+      const aUsage = a.ppg || a.points || a.usage || 0;
+      const bUsage = b.ppg || b.points || b.usage || 0;
+      return bUsage - aUsage;
+    });
+  
+  const usageLeaders = sortedByUsage
+    .slice(0, 2)
+    .map(p => p.name || p.displayName);
+  
+  return {
+    espnStarters,
+    minutesLeaders,
+    usageLeaders,
+    teamAbbr,
+    sport,
+    rosterSize: roster.length
+  };
+};
+
+// Check if a player qualifies as a star using multi-signal system
+// This replaces the old isProtectedStar function
+const qualifiesAsStarMultiSignal = (playerName, teamAbbr, sport, rosterContext = {}) => {
+  const evaluation = evaluateStarSignals(playerName, teamAbbr, sport, rosterContext);
+  return {
+    qualifies: evaluation.isNotableStar,
+    signals: evaluation.signals,
+    signalCount: evaluation.signalCount,
+    isEmergingPlayer: evaluation.isEmergingPlayer
+  };
+};
+
 // Check if a player is available for matchup selection
-// HARD FIX #3: Also checks roster membership when roster data is available
-// Returns: { available: boolean, verified: boolean, status: string, onRoster: boolean }
-const isPlayerAvailableForMatchup = (playerName, teamAbbr, sport) => {
+// Uses multi-signal star qualification (no hardcoded name lists)
+// Returns: { available: boolean, verified: boolean, status: string, starQualification: object }
+const isPlayerAvailableForMatchup = (playerName, teamAbbr, sport, rosterContext = {}) => {
   if (!playerName || !teamAbbr || !sport) {
     return { available: false, verified: false, status: 'INVALID_INPUT', onRoster: false };
   }
@@ -877,54 +1012,71 @@ const isPlayerAvailableForMatchup = (playerName, teamAbbr, sport) => {
   const cached = INJURY_CACHE[playerKey];
   const rosterData = ROSTER_CACHE[rosterKey];
   
-  // HARD FIX #3: Check if we have roster data for this team
+  // Evaluate star qualification using multi-signal system
+  const starQualification = qualifiesAsStarMultiSignal(playerName, teamAbbr, sport, rosterContext);
+  
+  // For players with 2+ star signals, be lenient with roster verification
+  // They can only be excluded if EXPLICITLY marked OUT/IR
+  if (starQualification.qualifies) {
+    if (cached && UNAVAILABLE_STATUSES.includes(cached.status)) {
+      console.log(`[Gamenight] Star OUT (${cached.status}, ${starQualification.signalCount} signals): ${playerName}`);
+      return { 
+        available: false, 
+        verified: true, 
+        status: cached.status, 
+        starQualification 
+      };
+    }
+    // Star with no explicit OUT status = available
+    console.log(`[Gamenight] Star AVAILABLE (${starQualification.signalCount} signals: ${starQualification.signals.join(', ')}): ${playerName}`);
+    return { 
+      available: true, 
+      verified: cached ? true : false, 
+      status: cached?.status || 'EXPECTED_PLAYING',
+      starQualification
+    };
+  }
+  
+  // For non-star players, do normal roster + injury checks
   if (rosterData) {
     const rosterAge = Date.now() - rosterData.updatedAt;
     const rosterIsStale = rosterAge > 4 * 60 * 60 * 1000; // 4 hours
     
-    // If roster is recent and player is NOT on it, they're not available
     if (!rosterIsStale && !rosterData.playerNames.has(playerName)) {
       console.log(`[Gamenight] Player excluded (not on roster): ${playerName} for ${teamAbbr}`);
-      return { available: false, verified: true, status: 'NOT_ON_ROSTER', onRoster: false };
+      return { available: false, verified: true, status: 'NOT_ON_ROSTER', onRoster: false, starQualification };
     }
   }
   
   if (!cached) {
-    // Player not in cache - we don't know their status
-    // Return available but unverified (allows display with reduced confidence)
-    return { available: true, verified: false, status: 'UNKNOWN', onRoster: false };
+    return { available: true, verified: false, status: 'UNKNOWN', onRoster: false, starQualification };
   }
   
-  // Check if cache is stale (> 4 hours old)
   const cacheAge = Date.now() - cached.updatedAt;
-  const isStale = cacheAge > 4 * 60 * 60 * 1000; // 4 hours
+  const isStale = cacheAge > 4 * 60 * 60 * 1000;
   
-  // Check if player is unavailable
   if (UNAVAILABLE_STATUSES.includes(cached.status)) {
     console.log(`[Gamenight] Player excluded (${cached.status}): ${playerName}`);
-    return { available: false, verified: !isStale, status: cached.status };
+    return { available: false, verified: !isStale, status: cached.status, starQualification };
   }
   
-  // Check if player is confirmed available
   if (AVAILABLE_STATUSES.includes(cached.status)) {
-    return { available: true, verified: !isStale, status: cached.status };
+    return { available: true, verified: !isStale, status: cached.status, starQualification };
   }
   
-  // Unknown status - be conservative, treat as questionable
-  // Allow but mark unverified
-  return { available: true, verified: false, status: cached.status };
+  return { available: true, verified: false, status: cached.status, starQualification };
 };
 
 // Filter a list of players to only those available for matchup
 // Returns: { availablePlayers: string[], hasUnverifiedPlayers: boolean }
-const filterAvailablePlayers = (players, teamAbbr, sport) => {
+const filterAvailablePlayers = (players, teamAbbr, sport, rosterContext = {}) => {
   if (!Array.isArray(players) || players.length === 0) {
     return { availablePlayers: [], hasUnverifiedPlayers: false };
   }
   
   let hasUnverifiedPlayers = false;
   const availablePlayers = players.filter(playerName => {
-    const { available, verified } = isPlayerAvailableForMatchup(playerName, teamAbbr, sport);
+    const { available, verified } = isPlayerAvailableForMatchup(playerName, teamAbbr, sport, rosterContext);
     if (!verified) hasUnverifiedPlayers = true;
     return available;
   });
@@ -3508,7 +3660,7 @@ const AnimatedButton = ({ children, primary, className, onClick, disabled }) => 
 // ============================================
 // Roster Row Component - Clean & Scannable
 // ============================================
-const RosterRow = ({ player, onClick, isStarter, sport, battingOrder, showPitcherHand, isInferred }) => {
+const RosterRow = ({ player, onClick, isStarter, sport, battingOrder, showPitcherHand, isInferred, inferredReason }) => {
   // Guard: Handle null/undefined player
   if (!player) {
     return null;
@@ -3517,6 +3669,8 @@ const RosterRow = ({ player, onClick, isStarter, sport, battingOrder, showPitche
   const isInjured = player.status && player.status !== 'Active' && player.status !== 'active';
   const playerName = player.name || 'Unknown Player';
   const playerPosition = player.position || 'N/A';
+  // Check if this is an inferred star (multi-signal star added to fill data gap)
+  const isInferredStar = player._inferredStarter;
   
   return (
     <button
@@ -3528,6 +3682,7 @@ const RosterRow = ({ player, onClick, isStarter, sport, battingOrder, showPitche
         }
         ${isInjured ? 'opacity-60' : ''}
       `}
+      title={inferredReason || player._inferredReason || undefined}
     >
       {/* Batting Order Number (MLB) */}
       {battingOrder && (
@@ -3541,11 +3696,17 @@ const RosterRow = ({ player, onClick, isStarter, sport, battingOrder, showPitche
         <img 
           src={player.headshot} 
           alt="" 
-          className={`w-10 h-10 rounded-full object-cover ${isStarter && !isInferred ? 'ring-2 ring-blue-500/30' : isInferred ? 'ring-2 ring-yellow-500/20' : 'bg-white/10'}`}
+          className={`w-10 h-10 rounded-full object-cover ${
+            isInferredStar ? 'ring-2 ring-green-500/40' :
+            isStarter && !isInferred ? 'ring-2 ring-blue-500/30' : 
+            isInferred ? 'ring-2 ring-yellow-500/20' : 'bg-white/10'
+          }`}
         />
       ) : (
         <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold 
-          ${isStarter && !isInferred
+          ${isInferredStar
+            ? 'bg-gradient-to-br from-green-600/30 to-green-800/30 text-green-300'
+            : isStarter && !isInferred
             ? 'bg-gradient-to-br from-blue-600/30 to-blue-800/30 text-blue-300' 
             : isInferred 
             ? 'bg-gradient-to-br from-yellow-600/20 to-yellow-800/20 text-yellow-400'
@@ -3560,7 +3721,10 @@ const RosterRow = ({ player, onClick, isStarter, sport, battingOrder, showPitche
       <div className="flex-1 min-w-0">
         <div className={`text-sm truncate flex items-center gap-1.5 ${isStarter ? 'font-semibold text-white' : 'font-medium text-gray-300'}`}>
           {playerName}
-          {isInferred && (
+          {isInferredStar && (
+            <span className="text-[9px] text-green-400 bg-green-500/10 px-1.5 py-0.5 rounded" title={inferredReason}>★</span>
+          )}
+          {isInferred && !isInferredStar && (
             <span className="text-[9px] text-yellow-500 bg-yellow-500/10 px-1.5 py-0.5 rounded">PROJ</span>
           )}
         </div>
@@ -4940,60 +5104,144 @@ export default function GamenightApp() {
                             const espnStarters = roster.filter(p => p.isStarter);
                             const nonStarters = roster.filter(p => !p.isStarter);
                             
+                            // Build roster context for multi-signal star evaluation
+                            const teamAbbr = selectedTeam?.abbreviation || '';
+                            const rosterContext = buildRosterContext(roster, teamAbbr, 'nba');
+                            
                             // Position priority for filling gaps
                             const positionPriority = ['PG', 'SG', 'SF', 'PF', 'C'];
                             const fallbackPositions = ['G', 'F', 'G-F', 'F-G', 'F-C', 'C-F'];
                             
-                            // Build starting 5: use ESPN starters first, then fill gaps
+                            // ============================================
+                            // STEP 1: DERIVE Starting 5 (data-driven)
+                            // ============================================
                             let displayStarters = [...espnStarters];
+                            let derivationMethod = espnStarters.length >= 5 ? 'ESPN_CONFIRMED' : 
+                                                  espnStarters.length > 0 ? 'ESPN_PARTIAL' : 'INFERRED';
                             
-                            // If we have less than 5 starters, fill remaining slots
+                            // If we have less than 5 ESPN starters, fill by position + experience
                             if (displayStarters.length < 5) {
-                              // Track which positions we already have
                               const filledPositions = displayStarters.map(p => p.position);
                               
-                              // First pass: fill by missing core positions
+                              // Sort non-starters by experience (proxy for minutes/role)
+                              const sortedNonStarters = [...nonStarters].sort((a, b) => 
+                                (b.experience || 0) - (a.experience || 0)
+                              );
+                              
+                              // Fill by position priority
                               positionPriority.forEach(pos => {
                                 if (displayStarters.length >= 5) return;
                                 if (filledPositions.some(fp => fp === pos)) return;
                                 
-                                const candidate = nonStarters.find(p => 
+                                const candidate = sortedNonStarters.find(p => 
                                   p.position === pos && !displayStarters.includes(p)
                                 );
                                 if (candidate) {
                                   candidate._inferred = true;
+                                  candidate._inferredReason = 'Position fill';
                                   displayStarters.push(candidate);
                                   filledPositions.push(pos);
                                 }
                               });
                               
-                              // Second pass: fill by flexible positions (G, F, etc.)
+                              // Fill by flexible positions
                               fallbackPositions.forEach(pos => {
                                 if (displayStarters.length >= 5) return;
                                 
-                                const candidate = nonStarters.find(p => 
+                                const candidate = sortedNonStarters.find(p => 
                                   (p.position === pos || p.position?.includes(pos.charAt(0))) && 
                                   !displayStarters.includes(p)
                                 );
                                 if (candidate) {
                                   candidate._inferred = true;
+                                  candidate._inferredReason = 'Flex position fill';
                                   displayStarters.push(candidate);
                                 }
                               });
                               
-                              // Third pass: if still short, just take top remaining by experience
+                              // Final fallback: top remaining by experience
                               if (displayStarters.length < 5) {
-                                const remaining = nonStarters
-                                  .filter(p => !displayStarters.includes(p))
-                                  .sort((a, b) => (b.experience || 0) - (a.experience || 0));
-                                
+                                const remaining = sortedNonStarters.filter(p => !displayStarters.includes(p));
                                 while (displayStarters.length < 5 && remaining.length > 0) {
                                   const next = remaining.shift();
                                   next._inferred = true;
+                                  next._inferredReason = 'Experience fallback';
                                   displayStarters.push(next);
                                 }
                               }
                             }
+                            
+                            // ============================================
+                            // STEP 2: VALIDATE - Check for missing stars
+                            // ============================================
+                            // Evaluate each roster player for star signals
+                            const starValidation = {
+                              detectedStars: [],
+                              missingStars: [],
+                              inconsistencies: []
+                            };
+                            
+                            roster.forEach(player => {
+                              const name = player.name || player.displayName;
+                              const evaluation = evaluateStarSignals(name, teamAbbr, 'nba', rosterContext);
+                              
+                              if (evaluation.isNotableStar) {
+                                starValidation.detectedStars.push({
+                                  player,
+                                  signals: evaluation.signals,
+                                  signalCount: evaluation.signalCount
+                                });
+                                
+                                // Check if this star is in our derived Starting 5
+                                const inStarting5 = displayStarters.some(s => s.id === player.id);
+                                if (!inStarting5) {
+                                  starValidation.missingStars.push({
+                                    player,
+                                    signals: evaluation.signals,
+                                    signalCount: evaluation.signalCount
+                                  });
+                                  starValidation.inconsistencies.push(
+                                    `Star "${name}" (${evaluation.signalCount} signals: ${evaluation.signals.join(', ')}) missing from Starting 5`
+                                  );
+                                }
+                              }
+                            });
+                            
+                            // Log inconsistencies
+                            if (starValidation.inconsistencies.length > 0) {
+                              console.warn(`[Gamenight] Starting 5 data inconsistency for ${teamAbbr}:`, starValidation.inconsistencies);
+                            }
+                            
+                            // ============================================
+                            // STEP 3: RECONCILE - Add missing stars with flags
+                            // ============================================
+                            // Only add missing stars if we have room AND they qualify with 2+ signals
+                            starValidation.missingStars.forEach(({ player, signals, signalCount }) => {
+                              // Don't exceed 5 starters - but if a 2+ signal star is missing, swap out lowest-confidence player
+                              if (displayStarters.length < 5) {
+                                player._inferredStarter = true;
+                                player._inferredReason = `Multi-signal star (${signals.join(', ')}) missing from ESPN data`;
+                                displayStarters.push(player);
+                              } else if (signalCount >= 2) {
+                                // Find lowest-confidence inferred player to potentially swap
+                                const inferredPlayers = displayStarters.filter(s => s._inferred && !s._inferredStarter);
+                                if (inferredPlayers.length > 0) {
+                                  // Replace the last inferred non-star with this star
+                                  const toReplace = inferredPlayers[inferredPlayers.length - 1];
+                                  const replaceIdx = displayStarters.indexOf(toReplace);
+                                  if (replaceIdx !== -1) {
+                                    console.log(`[Gamenight] Swapping inferred player for star: ${toReplace.name} -> ${player.name}`);
+                                    player._inferredStarter = true;
+                                    player._inferredReason = `Multi-signal star (${signals.join(', ')}) prioritized over inferred starter`;
+                                    displayStarters[replaceIdx] = player;
+                                  }
+                                }
+                              }
+                            });
+                            
+                            // Determine data quality flags for UI
+                            const hasDataInconsistency = starValidation.inconsistencies.length > 0;
+                            const starterDataIncomplete = espnStarters.length < 5;
                             
                             // Sort starters by position order for display
                             const posOrder = { 'PG': 1, 'G': 2, 'SG': 3, 'SF': 4, 'F': 5, 'PF': 6, 'C': 7 };
@@ -5015,11 +5263,17 @@ export default function GamenightApp() {
                                 <div className="mb-6">
                                   <div className="flex items-center gap-2 mb-3">
                                     <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Starting 5</span>
-                                    {hasPartialESPNStarters && (
+                                    {hasPartialESPNStarters && !hasDataInconsistency && (
                                       <span className="text-[10px] text-yellow-500 bg-yellow-500/10 px-2 py-0.5 rounded-full">Partial Lineup</span>
                                     )}
                                     {hasNoESPNStarters && (
                                       <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">Projected</span>
+                                    )}
+                                    {hasDataInconsistency && (
+                                      <span className="text-[10px] text-yellow-500 bg-yellow-500/10 px-2 py-0.5 rounded-full" 
+                                            title={starValidation.inconsistencies.join('; ')}>
+                                        Starter data incomplete
+                                      </span>
                                     )}
                                   </div>
                                   
@@ -5043,7 +5297,8 @@ export default function GamenightApp() {
                                             onClick={() => setSelectedPlayer(player)}
                                             isStarter={true}
                                             sport="nba"
-                                            isInferred={player._inferred}
+                                            isInferred={player._inferred || player._inferredStarter}
+                                            inferredReason={player._inferredReason}
                                           />
                                         ))}
                                       </div>
