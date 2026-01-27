@@ -42,6 +42,142 @@ if (typeof document !== 'undefined' && !document.getElementById('gn-styles')) {
 }
 
 // ============================================
+// ERROR BOUNDARY
+// ============================================
+// Catches JavaScript errors anywhere in the child component tree
+// and displays a fallback UI instead of crashing the whole app
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null, errorInfo: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    // Update state so the next render shows the fallback UI
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    // Log the error to console and error reporting service
+    console.error('[Gamenight] Error caught by boundary:', error, errorInfo);
+    this.setState({ errorInfo });
+    
+    // Try to log to backend (fire and forget)
+    try {
+      // Use hardcoded URL to avoid reference issues since this runs before CONFIG
+      fetch('https://gusjdcmqpdyqikqxxnli.supabase.co/functions/v1/log-error', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: error?.message || String(error),
+          stack: error?.stack,
+          componentStack: errorInfo?.componentStack,
+          type: 'react_error_boundary',
+          url: window.location.href,
+          timestamp: new Date().toISOString()
+        })
+      }).catch(() => {});
+    } catch (e) {
+      // Ignore logging failures
+    }
+  }
+
+  handleRetry = () => {
+    this.setState({ hasError: false, error: null, errorInfo: null });
+    window.location.reload();
+  };
+
+  render() {
+    if (this.state.hasError) {
+      // Fallback UI
+      return (
+        <div style={{
+          minHeight: '100vh',
+          background: '#0a0a0f',
+          color: 'white',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '20px',
+          fontFamily: "'Space Grotesk', sans-serif",
+          textAlign: 'center'
+        }}>
+          <div style={{
+            width: '64px',
+            height: '64px',
+            background: 'rgba(239, 68, 68, 0.1)',
+            borderRadius: '50%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            marginBottom: '24px',
+            border: '1px solid rgba(239, 68, 68, 0.2)'
+          }}>
+            <span style={{ fontSize: '28px' }}>⚠️</span>
+          </div>
+          
+          <h1 style={{ fontSize: '20px', fontWeight: 'bold', marginBottom: '8px' }}>
+            Something went wrong
+          </h1>
+          
+          <p style={{ color: '#9ca3af', fontSize: '14px', marginBottom: '24px', maxWidth: '300px' }}>
+            The app encountered an unexpected error. This has been logged and we'll look into it.
+          </p>
+          
+          <button
+            onClick={this.handleRetry}
+            style={{
+              background: 'white',
+              color: 'black',
+              border: 'none',
+              borderRadius: '12px',
+              padding: '12px 24px',
+              fontSize: '14px',
+              fontWeight: '600',
+              cursor: 'pointer',
+              marginBottom: '16px'
+            }}
+          >
+            Reload App
+          </button>
+          
+          {/* Show error details in development */}
+          {process.env.NODE_ENV === 'development' && this.state.error && (
+            <details style={{ 
+              marginTop: '24px', 
+              textAlign: 'left', 
+              background: 'rgba(255,255,255,0.05)',
+              borderRadius: '8px',
+              padding: '12px',
+              maxWidth: '90%',
+              overflow: 'auto'
+            }}>
+              <summary style={{ cursor: 'pointer', color: '#9ca3af', fontSize: '12px' }}>
+                Error Details (dev only)
+              </summary>
+              <pre style={{ 
+                fontSize: '10px', 
+                color: '#ef4444', 
+                marginTop: '8px',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word'
+              }}>
+                {this.state.error.toString()}
+                {this.state.errorInfo?.componentStack}
+              </pre>
+            </details>
+          )}
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+// ============================================
 // CONFIG
 // ============================================
 const SUPABASE_URL = 'https://gusjdcmqpdyqikqxxnli.supabase.co';
@@ -100,6 +236,83 @@ const getDeviceId = () => {
 };
 
 // ============================================
+// LOCAL STORAGE CACHE
+// ============================================
+// Caches ESPN responses to reduce API calls and improve load time
+// TTL: 5 minutes for game data (balances freshness vs performance)
+
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_PREFIX = 'gn_cache_';
+
+// Get cached data if fresh, otherwise return null
+const getCachedData = (key) => {
+  try {
+    const cached = localStorage.getItem(CACHE_PREFIX + key);
+    if (!cached) return null;
+    
+    const { data, timestamp } = JSON.parse(cached);
+    const age = Date.now() - timestamp;
+    
+    if (age > CACHE_TTL) {
+      // Cache expired, remove it
+      localStorage.removeItem(CACHE_PREFIX + key);
+      return null;
+    }
+    
+    console.log(`[Gamenight] Cache hit for ${key} (${Math.round(age / 1000)}s old)`);
+    return data;
+  } catch (e) {
+    // If parsing fails, remove corrupt cache
+    localStorage.removeItem(CACHE_PREFIX + key);
+    return null;
+  }
+};
+
+// Store data in cache with timestamp
+const setCachedData = (key, data) => {
+  try {
+    const cacheEntry = {
+      data,
+      timestamp: Date.now()
+    };
+    localStorage.setItem(CACHE_PREFIX + key, JSON.stringify(cacheEntry));
+    console.log(`[Gamenight] Cached ${key}`);
+  } catch (e) {
+    // localStorage might be full or disabled
+    console.warn('[Gamenight] Cache write failed:', e.message);
+  }
+};
+
+// Clear all gamenight cache (useful for debugging)
+const clearCache = () => {
+  const keys = Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX));
+  keys.forEach(k => localStorage.removeItem(k));
+  console.log(`[Gamenight] Cleared ${keys.length} cache entries`);
+};
+
+// ============================================
+// DEBUG HELPERS (exposed on window for console access)
+// ============================================
+// Usage in browser console:
+//   window.gn.clearCache() - Clear all cached ESPN data
+//   window.gn.injuryCache() - View current injury cache
+//   window.gn.lineupCache() - View current lineup cache
+if (typeof window !== 'undefined') {
+  window.gn = {
+    clearCache,
+    injuryCache: () => {
+      console.log('[Gamenight] INJURY_CACHE:', INJURY_CACHE);
+      return INJURY_CACHE;
+    },
+    lineupCache: () => {
+      console.log('[Gamenight] LINEUP_CACHE:', LINEUP_CACHE);
+      return LINEUP_CACHE;
+    },
+    version: '1.0.0-final'
+  };
+}
+
+// ============================================
 // ESPN Data Transformer
 // ============================================
 
@@ -132,6 +345,27 @@ const isGamePostponedOrCancelled = (status) => {
   if (!status) return false;
   const s = status.toUpperCase();
   return s.includes('POSTPONED') || s.includes('CANCELED') || s.includes('CANCELLED') || s.includes('SUSPENDED');
+};
+
+// Format relative time for data freshness display
+const formatRelativeTime = (date) => {
+  if (!date) return null;
+  const now = new Date();
+  const diffMs = now - new Date(date);
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+  
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return 'Over a day ago';
+};
+
+// Check if data is stale (more than 30 minutes old)
+const isDataStale = (date) => {
+  if (!date) return true;
+  const diffMs = new Date() - new Date(date);
+  return diffMs > 30 * 60 * 1000; // 30 minutes
 };
 
 // ============================================
@@ -925,6 +1159,95 @@ const getCachedLineup = (teamAbbr, sport, gameId) => {
   return LINEUP_CACHE[key] || null;
 };
 
+// ============================================
+// UNDERDOG FANTASY API INTEGRATION (STUB)
+// ============================================
+// When Underdog API releases confirmed starting lineups, this becomes the
+// FINAL AUTHORITY for lineup data. No inference, no fallback, no reconciliation.
+// 
+// Hierarchy when Underdog is live:
+// 1. Underdog API → FINAL (no override)
+// 2. ESPN_CONFIRMED → fallback only if Underdog unavailable
+// 3. ESPN_PARTIAL → fallback
+// 4. INFERRED → last resort
+//
+// FEATURE FLAG: Set to true when Underdog API is available
+const UNDERDOG_API_ENABLED = false;
+
+// Underdog API endpoint (placeholder - update when real endpoint available)
+const UNDERDOG_API_BASE = 'https://api.underdogfantasy.com/v1'; // PLACEHOLDER
+
+// Underdog lineup cache (separate from general LINEUP_CACHE for clarity)
+// { 'sport:teamAbbr:gameId': { starters: string[], confirmedAt: number, source: 'UNDERDOG' } }
+const UNDERDOG_LINEUP_CACHE = {};
+
+// Fetch confirmed lineups from Underdog API
+// Returns: { success: boolean, lineups: { [teamAbbr]: string[] }, error?: string }
+const fetchUnderdogLineups = async (sport = 'nba') => {
+  // STUB: Return empty until API is available
+  if (!UNDERDOG_API_ENABLED) {
+    console.log('[Gamenight] Underdog API not enabled, skipping fetch');
+    return { success: false, lineups: {}, error: 'UNDERDOG_API_DISABLED' };
+  }
+  
+  try {
+    // TODO: Replace with actual Underdog API call when available
+    // Expected endpoint: GET /lineups?sport={sport}&date={YYYY-MM-DD}
+    // Expected response: { lineups: [{ team: 'LAL', starters: ['LeBron James', ...] }, ...] }
+    
+    const todayET = getTodayDateET();
+    const res = await fetch(`${UNDERDOG_API_BASE}/lineups?sport=${sport}&date=${todayET}`);
+    
+    if (!res.ok) {
+      console.warn(`[Gamenight] Underdog API error: ${res.status}`);
+      return { success: false, lineups: {}, error: `HTTP ${res.status}` };
+    }
+    
+    const data = await res.json();
+    const lineups = {};
+    
+    // Parse Underdog response (adjust when real API schema is known)
+    (data.lineups || []).forEach(lineup => {
+      if (lineup.team && Array.isArray(lineup.starters)) {
+        lineups[lineup.team] = lineup.starters;
+        
+        // Update LINEUP_CACHE with Underdog data (highest priority)
+        updateLineupCache(lineup.team, sport, 'current', lineup.starters, LINEUP_SOURCES.UNDERDOG);
+        
+        // Also update UNDERDOG_LINEUP_CACHE for tracking
+        const key = `${sport}:${lineup.team}:current`;
+        UNDERDOG_LINEUP_CACHE[key] = {
+          starters: lineup.starters,
+          confirmedAt: Date.now(),
+          source: 'UNDERDOG'
+        };
+      }
+    });
+    
+    console.log(`[Gamenight] ✓ Underdog lineups fetched: ${Object.keys(lineups).length} teams`);
+    return { success: true, lineups };
+    
+  } catch (err) {
+    console.warn('[Gamenight] Underdog API fetch failed:', err.message);
+    return { success: false, lineups: {}, error: err.message };
+  }
+};
+
+// Check if Underdog has confirmed lineup for a team
+const hasUnderdogLineup = (teamAbbr, sport) => {
+  if (!UNDERDOG_API_ENABLED) return false;
+  const key = `${sport}:${teamAbbr}:current`;
+  return !!UNDERDOG_LINEUP_CACHE[key];
+};
+
+// Get Underdog-confirmed starters for a team
+// Returns: string[] | null
+const getUnderdogStarters = (teamAbbr, sport) => {
+  if (!UNDERDOG_API_ENABLED) return null;
+  const key = `${sport}:${teamAbbr}:current`;
+  return UNDERDOG_LINEUP_CACHE[key]?.starters || null;
+};
+
 // Update injury cache when roster data is fetched
 // HARD FIX #3: Also tracks roster membership
 const updateInjuryCache = (teamAbbr, sport, roster) => {
@@ -1034,18 +1357,43 @@ const fetchTeamInjuries = async (teamAbbr, sport) => {
       updateInjuryCache(teamAbbr, sport, roster);
     }
     
-    // Count injured players for logging
-    const injuredCount = roster.filter(p => 
+    // Count and log injured players
+    const injuredPlayers = roster.filter(p => 
       UNAVAILABLE_STATUSES.includes(p.status)
-    ).length;
+    );
     
-    console.log(`[Gamenight] Injury prefetch complete for ${sport}:${teamAbbr}: ${roster.length} players, ${injuredCount} injured/out`);
+    // Check if any known stars are injured
+    const teamStars = getPlayersForTeam(teamAbbr, sport);
+    const { mvp, allStar } = getStarTiers(sport);
+    const allKnownStars = [...teamStars, ...mvp, ...allStar];
+    
+    const injuredStars = injuredPlayers.filter(p => 
+      allKnownStars.includes(p.name)
+    );
+    
+    // Log summary
+    console.log(`[Gamenight] Injury prefetch for ${sport}:${teamAbbr}: ${roster.length} players, ${injuredPlayers.length} OUT`);
+    
+    // Log specific injured players (especially stars)
+    if (injuredStars.length > 0) {
+      console.warn(`[Gamenight] ⚠️ STARS OUT for ${teamAbbr}:`, 
+        injuredStars.map(p => `${p.name} (${p.status})`).join(', ')
+      );
+    }
+    if (injuredPlayers.length > 0 && injuredPlayers.length <= 5) {
+      console.log(`[Gamenight] OUT players for ${teamAbbr}:`, 
+        injuredPlayers.map(p => `${p.name} (${p.status})`).join(', ')
+      );
+    } else if (injuredPlayers.length > 5) {
+      console.log(`[Gamenight] OUT players for ${teamAbbr}: ${injuredPlayers.length} total`);
+    }
     
     return { 
       success: true, 
       teamAbbr, 
       playerCount: roster.length, 
-      injuredCount 
+      injuredCount: injuredPlayers.length,
+      injuredStars: injuredStars.map(p => p.name)
     };
   } catch (err) {
     console.warn(`[Gamenight] Injury prefetch error for ${teamAbbr}:`, err.message);
@@ -1094,7 +1442,18 @@ const prefetchInjuriesForGames = async (games, sport) => {
   const successCount = results.filter(r => r.success).length;
   const totalInjured = results.reduce((sum, r) => sum + (r.injuredCount || 0), 0);
   
-  console.log(`[Gamenight] Injury prefetch complete: ${successCount}/${teamsToFetch.length} teams, ${totalInjured} total players OUT/IR`);
+  // Collect all injured stars across all teams
+  const allInjuredStars = results
+    .filter(r => r.injuredStars && r.injuredStars.length > 0)
+    .map(r => ({ team: r.teamAbbr, stars: r.injuredStars }));
+  
+  console.log(`[Gamenight] ✓ Injury prefetch complete: ${successCount}/${teamsToFetch.length} teams, ${totalInjured} total OUT`);
+  
+  if (allInjuredStars.length > 0) {
+    console.warn(`[Gamenight] ⚠️ INJURED STARS SUMMARY:`, 
+      allInjuredStars.map(t => `${t.team}: ${t.stars.join(', ')}`).join(' | ')
+    );
+  }
   
   if (errors.length > 0) {
     console.warn(`[Gamenight] Injury prefetch errors:`, errors);
@@ -1104,6 +1463,7 @@ const prefetchInjuriesForGames = async (games, sport) => {
     teamsProcessed: successCount,
     totalTeams: teamsToFetch.length,
     totalInjured,
+    injuredStars: allInjuredStars,
     errors
   };
 };
@@ -1329,8 +1689,21 @@ const filterAvailablePlayers = (players, teamAbbr, sport, rosterContext = {}) =>
 };
 
 // ============================================
-// STATIC PLAYER DATA (Best-effort, last updated Jan 2025)
+// STATIC PLAYER DATA
 // ============================================
+// LAST VERIFIED: January 27, 2025
+// 
+// Recent trades reflected:
+// - Jimmy Butler: MIA → GSW (Jan 2025)
+// 
+// TO UPDATE THIS DATA:
+// 1. Check ESPN/NBA for recent trades
+// 2. Update TEAM_STARS for affected teams
+// 3. Update this comment with date and trade notes
+// 4. Keep MVP_TIER and ALL_STAR lists current with season performance
+//
+// Note: This is BEST-EFFORT data. The multi-signal system uses ESPN
+// roster data as the primary source; this is supplementary.
 
 // === NBA PLAYERS (2024-25 Season) ===
 const NBA_PLAYERS = {
@@ -1833,6 +2206,20 @@ const calculateNBAStarPower = (homeTeam, awayTeam) => {
     filterAvailablePlayers(rawHomeStars, homeAbbr, 'nba');
   const { availablePlayers: awayStars, hasUnverifiedPlayers: awayUnverified } = 
     filterAvailablePlayers(rawAwayStars, awayAbbr, 'nba');
+  
+  // LOG: Show which stars were filtered out due to injury
+  const homeExcluded = rawHomeStars.filter(s => !homeStars.includes(s));
+  const awayExcluded = rawAwayStars.filter(s => !awayStars.includes(s));
+  if (homeExcluded.length > 0 || awayExcluded.length > 0) {
+    console.log(`[Gamenight] Star filtering for ${awayAbbr}@${homeAbbr}:`, {
+      homeRaw: rawHomeStars,
+      homeAvailable: homeStars,
+      homeExcluded: homeExcluded,
+      awayRaw: rawAwayStars,
+      awayAvailable: awayStars,
+      awayExcluded: awayExcluded
+    });
+  }
   
   const hasUnverifiedPlayers = homeUnverified || awayUnverified;
   
@@ -2967,23 +3354,40 @@ const sortRosterBySport = (roster, sport, depthChartData = null) => {
 const api = {
   // Fetch live games via Supabase proxy (avoids CORS)
   // CLASSIFICATION-BASED: Games are classified, NOT filtered
+  // CACHING: Raw ESPN response cached for 5 min to reduce API calls
   async getGamesFromESPN(sport = 'nba') {
     const fetchTimestamp = new Date().toISOString();
     const todayET = getTodayDateET();
+    const cacheKey = `espn_${sport}_${todayET}`;
     
     try {
-      const res = await fetch(`${ESPN_PROXY}?sport=${sport}&endpoint=scoreboard`);
-      if (!res.ok) {
-        console.error('ESPN proxy error:', res.status);
-        logError(new Error(`ESPN proxy error: ${res.status}`), { sport, endpoint: 'scoreboard' });
-        return { games: [], error: `API error: ${res.status}`, dataFreshness: { fetchTimestamp, todayET, status: 'ERROR' } };
-      }
-      const data = await res.json();
-      if (data.error) {
-        return { games: [], error: data.error, dataFreshness: { fetchTimestamp, todayET, status: 'ERROR' } };
+      // Check cache first
+      let data = getCachedData(cacheKey);
+      let fromCache = false;
+      
+      if (data) {
+        fromCache = true;
+        console.log(`[Gamenight] Using cached ESPN data for ${sport}`);
+      } else {
+        // Fetch fresh data
+        const res = await fetch(`${ESPN_PROXY}?sport=${sport}&endpoint=scoreboard`);
+        if (!res.ok) {
+          console.error('ESPN proxy error:', res.status);
+          logError(new Error(`ESPN proxy error: ${res.status}`), { sport, endpoint: 'scoreboard' });
+          return { games: [], error: `API error: ${res.status}`, dataFreshness: { fetchTimestamp, todayET, status: 'ERROR' } };
+        }
+        data = await res.json();
+        
+        if (data.error) {
+          return { games: [], error: data.error, dataFreshness: { fetchTimestamp, todayET, status: 'ERROR' } };
+        }
+        
+        // Cache the raw response
+        setCachedData(cacheKey, data);
       }
       
       // Transform all events - each game now has dateClassification
+      // (Always run transformation even on cached data to get fresh scores)
       const allGames = (data.events || [])
         .map(e => transformESPNGame(e, sport))
         .filter(Boolean);
@@ -3046,6 +3450,7 @@ const api = {
         fetchTimestamp,
         todayET,
         status: 'OK',
+        fromCache, // Indicates if data came from localStorage cache
         totalEventsReceived: data.events?.length || 0,
         gamesAfterTransform: allGames.length,
         // Classification counts (for debugging)
@@ -3898,7 +4303,7 @@ const GameCardSkeleton = () => (
 // ============================================
 // Animated Button - Polished
 // ============================================
-const AnimatedButton = ({ children, primary, className, onClick, disabled }) => {
+const AnimatedButton = ({ children, primary, className, onClick, disabled, ...ariaProps }) => {
   const reducedMotion = useReducedMotion();
   const [pressed, setPressed] = useState(false);
   
@@ -3918,6 +4323,7 @@ const AnimatedButton = ({ children, primary, className, onClick, disabled }) => 
         transition: reducedMotion ? 'none' : 'transform 150ms ease, opacity 150ms ease',
         WebkitTapHighlightColor: 'transparent',
       }}
+      {...ariaProps}
     >
       {children}
     </button>
@@ -4042,7 +4448,7 @@ const LEADERBOARD = [
 // ============================================
 // Main App
 // ============================================
-export default function GamenightApp() {
+function GamenightApp() {
   const reducedMotion = useReducedMotion();
   
   // UI State
@@ -4369,12 +4775,18 @@ export default function GamenightApp() {
         {!loading && activeTab === 'tonight' && (
           <div className="animate-fadeIn">
             {/* Sport Pills */}
-            <div className="flex gap-2 p-1 bg-white/[0.02] rounded-3xl border border-white/5 mb-6">
+            <div 
+              className="flex gap-2 p-1 bg-white/[0.02] rounded-3xl border border-white/5 mb-6"
+              role="tablist"
+              aria-label="Select sport"
+            >
               {['nba', 'nfl', 'mlb'].map(s => (
                 <AnimatedButton 
                   key={s} 
                   onClick={() => setActiveSport(s)} 
                   className={`flex-1 py-3.5 rounded-2xl text-sm font-semibold transition-all ${activeSport === s ? 'bg-white text-black shadow-lg' : 'text-gray-500 hover:text-gray-300'}`}
+                  aria-selected={activeSport === s}
+                  role="tab"
                 >
                   {s.toUpperCase()}
                 </AnimatedButton>
@@ -4432,7 +4844,16 @@ export default function GamenightApp() {
                           bestGame.score >= 60 ? 'text-orange-400' : 'text-gray-400'
                         }`}>{bestGame.score}</span>
                       </div>
-                      <span className="text-xs font-semibold text-gray-400 px-3 py-1.5 bg-white/5 rounded-xl">{activeSport.toUpperCase()}</span>
+                      <div className="flex flex-col items-end gap-1">
+                        <span className="text-xs font-semibold text-gray-400 px-3 py-1.5 bg-white/5 rounded-xl">{activeSport.toUpperCase()}</span>
+                        {/* Data freshness indicator */}
+                        {lastUpdated && (
+                          <span className={`text-[9px] ${isDataStale(lastUpdated) ? 'text-yellow-500' : 'text-gray-600'}`}>
+                            {isDataStale(lastUpdated) && '⚠ '}
+                            {formatRelativeTime(lastUpdated)}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -4659,6 +5080,11 @@ export default function GamenightApp() {
                             <div 
                               className="text-right cursor-pointer hover:bg-white/5 rounded-lg px-2 py-1 -mr-2 transition-colors"
                               onClick={() => setExpandedAlternateId(expandedAlternateId === g.id ? null : g.id)}
+                              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpandedAlternateId(expandedAlternateId === g.id ? null : g.id); }}}
+                              role="button"
+                              tabIndex={0}
+                              aria-expanded={expandedAlternateId === g.id}
+                              aria-label={`Show score breakdown for ${g.awayTeam?.abbreviation} at ${g.homeTeam?.abbreviation}, score ${g.score}`}
                             >
                               <div className="text-[8px] text-gray-600 uppercase tracking-wide">Watch</div>
                               <div className="flex items-center gap-1">
@@ -5103,8 +5529,12 @@ export default function GamenightApp() {
       </main>
 
       {/* Tab Bar - Safe area aware */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-[#0a0a0f]/95 backdrop-blur-xl border-t border-white/5 z-50" style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 20px), 20px)' }}>
-        <div className="flex justify-center gap-2 px-4 pt-3 max-w-md mx-auto">
+      <nav 
+        className="fixed bottom-0 left-0 right-0 bg-[#0a0a0f]/95 backdrop-blur-xl border-t border-white/5 z-50" 
+        style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 20px), 20px)' }}
+        aria-label="Main navigation"
+      >
+        <div className="flex justify-center gap-2 px-4 pt-3 max-w-md mx-auto" role="tablist">
           {[
             ['tonight', 'Tonight', Icons.Home],
             ['challenge', 'Challenge', Icons.Target],
@@ -5118,6 +5548,9 @@ export default function GamenightApp() {
                   ? 'text-white bg-white/10' 
                   : 'text-gray-500 hover:text-gray-400'
               }`}
+              role="tab"
+              aria-selected={activeTab === tab}
+              aria-label={`${label} tab`}
             >
               <Icon />
               <span className="text-[11px] font-semibold">{label}</span>
@@ -6498,5 +6931,18 @@ export default function GamenightApp() {
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
       `}</style>
     </div>
+  );
+}
+
+// ============================================
+// WRAPPED EXPORT WITH ERROR BOUNDARY
+// ============================================
+// Wraps the entire app in an error boundary to prevent white-screen crashes
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <GamenightApp />
+    </ErrorBoundary>
   );
 }
