@@ -806,16 +806,16 @@ const validateDataFreshness = (fetchTimestamp, gameStatus = 'scheduled') => {
 // Populated when team rosters are fetched.
 // Used to EXCLUDE players from matchup selection.
 
-// Status values that mean player is OUT and should be excluded
+// Status values that mean player is OUT and should be excluded from MATCHUPS
+// NOTE: Day-To-Day and Questionable are NOT included here - those players often play
+// This list is for matchup card star filtering only
 const UNAVAILABLE_STATUSES = [
   'Out', 'OUT', 
   'Injured Reserve', 'IR',
-  'Doubtful', 'DOUBTFUL',
   'Suspended', 'SUSPENDED',
   'Not With Team', 'NWT',
   'Physically Unable to Perform', 'PUP',
   'Non-Football Injury', 'NFI',
-  'Day-To-Day', // Conservative: exclude day-to-day too
 ];
 
 // Statuses that EXCLUDE a player from Starting 5 (stricter than star filtering)
@@ -955,6 +955,157 @@ const updateInjuryCache = (teamAbbr, sport, roster) => {
   };
   
   console.log(`[Gamenight] Roster cache updated for ${rosterKey}: ${roster.length} players`);
+};
+
+// ============================================
+// INJURY PREFETCH FOR GAME-LIST LEVEL
+// ============================================
+// This is the FIX for the fragile injury exclusion.
+// Previously, INJURY_CACHE was only populated when user tapped a team.
+// Now we prefetch injuries for ALL teams in today's games BEFORE ranking.
+// This ensures filterAvailablePlayers actually has data to work with.
+
+// Cache TTL for injury data (15 minutes)
+const INJURY_CACHE_TTL = 15 * 60 * 1000;
+
+// Check if a team's injury data needs refresh
+const needsInjuryRefresh = (teamAbbr, sport) => {
+  const rosterKey = `${sport}:${teamAbbr}`;
+  const cached = ROSTER_CACHE[rosterKey];
+  if (!cached) return true;
+  const age = Date.now() - cached.updatedAt;
+  return age > INJURY_CACHE_TTL;
+};
+
+// Fetch roster/injuries for a single team (lightweight version)
+// Returns: { success: boolean, teamAbbr, playerCount, injuredCount }
+const fetchTeamInjuries = async (teamAbbr, sport) => {
+  if (!teamAbbr || !sport) {
+    return { success: false, teamAbbr, error: 'INVALID_INPUT' };
+  }
+  
+  // Skip if recently cached
+  if (!needsInjuryRefresh(teamAbbr, sport)) {
+    console.log(`[Gamenight] Injury cache fresh for ${sport}:${teamAbbr}, skipping fetch`);
+    return { success: true, teamAbbr, cached: true };
+  }
+  
+  try {
+    const res = await fetch(`${ESPN_PROXY}?sport=${sport}&endpoint=roster&teamId=${teamAbbr}`);
+    if (!res.ok) {
+      console.warn(`[Gamenight] Roster fetch failed for ${teamAbbr}: ${res.status}`);
+      return { success: false, teamAbbr, error: `HTTP ${res.status}` };
+    }
+    
+    const rosterData = await res.json();
+    const athletes = rosterData.athletes || [];
+    
+    // Parse roster (same logic as getTeam, but simplified)
+    let roster = [];
+    if (athletes.length > 0) {
+      const firstAthlete = athletes[0];
+      
+      if (firstAthlete.id && firstAthlete.displayName) {
+        // Flat format
+        roster = athletes.map(player => ({
+          name: player.displayName || player.fullName,
+          status: player.injuries?.[0]?.status || 'Active',
+          injuryType: player.injuries?.[0]?.type,
+          isStarter: player.starter || false
+        }));
+      } else if (firstAthlete.items || firstAthlete.athletes) {
+        // Grouped format
+        athletes.forEach(group => {
+          const players = group.items || group.athletes || [];
+          players.forEach(player => {
+            roster.push({
+              name: player.displayName || player.fullName,
+              status: player.injuries?.[0]?.status || 'Active',
+              injuryType: player.injuries?.[0]?.type,
+              isStarter: player.starter || false
+            });
+          });
+        });
+      }
+    }
+    
+    // Update the cache
+    if (roster.length > 0) {
+      updateInjuryCache(teamAbbr, sport, roster);
+    }
+    
+    // Count injured players for logging
+    const injuredCount = roster.filter(p => 
+      UNAVAILABLE_STATUSES.includes(p.status)
+    ).length;
+    
+    console.log(`[Gamenight] Injury prefetch complete for ${sport}:${teamAbbr}: ${roster.length} players, ${injuredCount} injured/out`);
+    
+    return { 
+      success: true, 
+      teamAbbr, 
+      playerCount: roster.length, 
+      injuredCount 
+    };
+  } catch (err) {
+    console.warn(`[Gamenight] Injury prefetch error for ${teamAbbr}:`, err.message);
+    return { success: false, teamAbbr, error: err.message };
+  }
+};
+
+// Prefetch injuries for all teams in a list of games
+// Called BEFORE ranking games so filterAvailablePlayers has data
+// Uses limited concurrency to avoid overwhelming ESPN API
+const prefetchInjuriesForGames = async (games, sport) => {
+  if (!Array.isArray(games) || games.length === 0) {
+    return { teamsProcessed: 0, errors: [] };
+  }
+  
+  // Extract unique team abbreviations
+  const teamAbbrs = new Set();
+  games.forEach(game => {
+    if (game.homeTeam?.abbreviation) teamAbbrs.add(game.homeTeam.abbreviation);
+    if (game.awayTeam?.abbreviation) teamAbbrs.add(game.awayTeam.abbreviation);
+  });
+  
+  const teamsToFetch = Array.from(teamAbbrs);
+  console.log(`[Gamenight] Prefetching injuries for ${teamsToFetch.length} teams: ${teamsToFetch.join(', ')}`);
+  
+  // Fetch in parallel with limited concurrency (4 at a time)
+  const CONCURRENCY = 4;
+  const results = [];
+  const errors = [];
+  
+  for (let i = 0; i < teamsToFetch.length; i += CONCURRENCY) {
+    const batch = teamsToFetch.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(
+      batch.map(abbr => fetchTeamInjuries(abbr, sport))
+    );
+    
+    batchResults.forEach(result => {
+      results.push(result);
+      if (!result.success) {
+        errors.push({ team: result.teamAbbr, error: result.error });
+      }
+    });
+  }
+  
+  // Log summary
+  const successCount = results.filter(r => r.success).length;
+  const totalInjured = results.reduce((sum, r) => sum + (r.injuredCount || 0), 0);
+  
+  console.log(`[Gamenight] Injury prefetch complete: ${successCount}/${teamsToFetch.length} teams, ${totalInjured} total players OUT/IR`);
+  
+  if (errors.length > 0) {
+    console.warn(`[Gamenight] Injury prefetch errors:`, errors);
+  }
+  
+  return {
+    teamsProcessed: successCount,
+    totalTeams: teamsToFetch.length,
+    totalInjured,
+    errors
+  };
 };
 
 // ============================================
@@ -1195,7 +1346,7 @@ const NBA_PLAYERS = {
   // NBA Team abbreviations → Active stars (2024-25)
   TEAM_STARS: {
     'LAL': ['LeBron James'], 
-    'GSW': ['Stephen Curry'], 
+    'GSW': ['Stephen Curry', 'Jimmy Butler'], 
     'MIL': ['Giannis Antetokounmpo', 'Damian Lillard'],
     'DEN': ['Nikola Jokic'], 
     'DAL': ['Luka Doncic', 'Kyrie Irving'], 
@@ -1209,7 +1360,7 @@ const NBA_PLAYERS = {
     'IND': ['Tyrese Haliburton'],
     'MEM': ['Ja Morant', 'Desmond Bane'], 
     'SAC': ['De\'Aaron Fox', 'Domantas Sabonis'],
-    'MIA': ['Jimmy Butler', 'Bam Adebayo', 'Tyler Herro'], 
+    'MIA': ['Bam Adebayo', 'Tyler Herro'], 
     'ORL': ['Paolo Banchero', 'Franz Wagner'],
     'CHA': ['LaMelo Ball'], 
     'DET': ['Cade Cunningham'], 
@@ -2142,9 +2293,10 @@ const calculateCompetitivenessScore = (homeTeam, awayTeam, validation) => {
   return { score, reason, diff: (diff * 100).toFixed(1) };
 };
 
-// 4. NARRATIVE SCORE (0-20 pts) - Is there a story?
+// 4. NARRATIVE SCORE (0-10 pts) - Is there a story?
+// REDUCED from 0-20: Story matters, but shouldn't dominate over star power and competitiveness
 const calculateNarrativeScore = (homeTeam, awayTeam, headline) => {
-  let score = 5;
+  let score = 3; // Base score (was 5)
   let reasons = [];
   
   // P1 FIX: Null-safe rivalry check
@@ -2157,19 +2309,19 @@ const calculateNarrativeScore = (homeTeam, awayTeam, headline) => {
   const rivalryIntensity = (homeAbbr && awayAbbr) ? (RIVALRIES[rivalryKey1] || RIVALRIES[rivalryKey2] || 0) : 0;
   
   if (rivalryIntensity === 3) {
-    score = 20;
+    score = 10; // Was 20
     reasons.push('Historic rivalry');
   } else if (rivalryIntensity === 2) {
-    score = 15;
+    score = 8; // Was 15
     reasons.push('Notable rivalry');
   } else if (rivalryIntensity === 1) {
-    score = 10;
+    score = 5; // Was 10
     reasons.push('Regional rivalry');
   }
   
   // ESPN headline bonus
   if (headline && headline.length > 10) {
-    score = Math.min(20, score + 3);
+    score = Math.min(10, score + 2); // Was +3, max 20
     reasons.push('Featured matchup');
   }
   
@@ -2178,7 +2330,7 @@ const calculateNarrativeScore = (homeTeam, awayTeam, headline) => {
   const awayCity = awayTeam?.city || '';
   const sameCity = (homeCity && awayCity && homeCity === awayCity);
   if (sameCity && rivalryIntensity === 0) {
-    score = Math.min(20, score + 8);
+    score = Math.min(10, score + 4); // Was +8, max 20
     reasons.push('City showdown');
   }
   
@@ -2243,12 +2395,12 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
   const hasUnverifiedVsMatchup = (starPower.matchupType === 'vs') && !starPower.injuryStatusVerified;
   
   if (validation.fallbackMode) {
-    // Fallback weights: Stakes 10, StarPower 25, Comp 10, Narrative 25, Access 10 = 80 max
+    // Fallback weights: Stakes 10, StarPower 25, Comp 10, Narrative 12 (reduced), Access 10 = 67 max
     totalScore = Math.round(
       (stakes.score / 30 * 10) +
       (starPower.score / 20 * 25) +
       (competitiveness.score / 20 * 10) +
-      (narrative.score / 20 * 25) +
+      (narrative.score / 10 * 12) + // Narrative now 0-10, reduced weight
       (accessibility.score / 10 * 10)
     );
     // Cap at 70 in fallback mode
@@ -2278,7 +2430,7 @@ const calculateWatchability = (homeTeam, awayTeam, network, startTime, headline,
   const contextReasons = [];
   if (stakes.score >= 15) contextReasons.push(stakes.reason);
   if (competitiveness.score >= 16) contextReasons.push(competitiveness.reason);
-  if (narrative.score >= 10) contextReasons.push(narrative.reason);
+  if (narrative.score >= 5) contextReasons.push(narrative.reason); // Lowered from 10 since max is now 10
   if (accessibility.score >= 7) contextReasons.push(accessibility.reason);
   
   // Abstract descriptions for vs matchups (no player names)
@@ -2629,7 +2781,7 @@ const transformESPNGame = (event, sport) => {
       ...(watchability.details.starPower.matchupType === 'featured' ? {
         [watchability.details.starPower.matchupLabel || 'Players to Watch']: watchability.details.starPower.matchupText
       } : {}),
-      rivalry: watchability.details.narrative.score >= 10 ? watchability.details.narrative.reason : null,
+      rivalry: watchability.details.narrative.score >= 5 ? watchability.details.narrative.reason : null, // Lowered from 10
     },
     betting: null,
   };
@@ -2869,13 +3021,25 @@ const api = {
       });
       
       // Separate games by eligibility for pick
-      const gamesEligibleForPick = allGames.filter(g => g.dateClassification?.eligibleForTodayPick);
+      const gamesEligibleForPickUnsorted = allGames.filter(g => g.dateClassification?.eligibleForTodayPick);
       const gamesNotEligible = allGames.filter(g => !g.dateClassification?.eligibleForTodayPick);
+      
+      // INJURY FIX: Prefetch injuries for ALL teams BEFORE ranking
+      // This ensures filterAvailablePlayers has real data instead of empty cache
+      // Without this, injured stars would still appear in matchups
+      let injuryPrefetchResult = null;
+      if (allGames.length > 0) {
+        injuryPrefetchResult = await prefetchInjuriesForGames(allGames, sport);
+      }
       
       // SLATE RENDERING GUARANTEE: If ESPN returns games, we show them
       // ALL games go in the slate, ranked by watchability
       // But only eligible games can be selected as Today's Pick
+      // NOTE: Ranking now happens AFTER injury prefetch, so star filtering works
       const games = rankGamesByWatchability(allGames);
+      
+      // FIX: Also sort eligible games so alternates are in correct order
+      const gamesEligibleForPick = rankGamesByWatchability(gamesEligibleForPickUnsorted);
       
       // Build data freshness metadata
       const dataFreshness = {
@@ -2892,7 +3056,14 @@ const api = {
           invalid: invalidCount,
           eligibleForPick: gamesEligibleForPick.length,
           notEligible: gamesNotEligible.length
-        }
+        },
+        // Injury prefetch results (for verifying the fix works)
+        injuryPrefetch: injuryPrefetchResult ? {
+          teamsProcessed: injuryPrefetchResult.teamsProcessed,
+          totalTeams: injuryPrefetchResult.totalTeams,
+          totalInjured: injuryPrefetchResult.totalInjured,
+          errors: injuryPrefetchResult.errors?.length || 0
+        } : null
       };
       
       // Log classification summary
@@ -2997,7 +3168,10 @@ const api = {
     
     // Get watchable AND eligible games for pick selection
     const eligibleGames = gamesEligibleForPick || games;
-    const watchableEligible = eligibleGames.filter(g => isGameWatchable(g.status));
+    // FIX: Sort watchable games by score to ensure alternates are in correct order
+    const watchableEligible = rankGamesByWatchability(
+      eligibleGames.filter(g => isGameWatchable(g.status))
+    );
     const confidenceTier = calculateConfidenceTier(watchableEligible, dataFreshness);
     
     // Load existing pick state
@@ -4352,7 +4526,7 @@ export default function GamenightApp() {
                         { key: 'stakes', label: 'Stakes', max: 30 },
                         { key: 'starPower', label: 'Stars', max: 20 },
                         { key: 'competitiveness', label: 'Close', max: 20 },
-                        { key: 'narrative', label: 'Story', max: 20 },
+                        { key: 'narrative', label: 'Story', max: 10 },
                         { key: 'accessibility', label: 'Access', max: 10 }
                       ].map(({ key, label, max }) => {
                         const val = bestGame.components[key] || 0;
@@ -5399,7 +5573,7 @@ export default function GamenightApp() {
                                       <span className="text-xs font-bold text-red-400 uppercase tracking-wider">Out Tonight</span>
                                     </div>
                                     <div className="bg-red-500/5 rounded-xl border border-red-500/10 overflow-hidden">
-                                      {injuredStars.slice(0, 3).map((player, i) => (
+                                      {injuredStars.map((player, i) => (
                                         <div key={player.id || i} className={`flex items-center justify-between px-4 py-2.5 ${i > 0 ? 'border-t border-red-500/10' : ''}`}>
                                           <div className="flex items-center gap-3">
                                             {player.headshot ? (
