@@ -5034,19 +5034,53 @@ export default function GamenightApp() {
                         </div>
                         {teamDetails.injuries && teamDetails.injuries.length > 0 ? (
                           <div className="bg-white/[0.03] rounded-xl overflow-hidden">
-                            {teamDetails.injuries.slice(0, 4).map((inj, i) => (
-                              <div key={i} className={`flex items-center justify-between px-4 py-3 ${i > 0 ? 'border-t border-white/5' : ''}`}>
-                                <div>
-                                  <div className="text-sm font-medium">{inj.name}</div>
-                                  <div className="text-xs text-gray-500">{inj.position}{inj.type ? ` · ${inj.type}` : ''}</div>
-                                </div>
-                                <span className={`text-xs font-semibold px-2.5 py-1 rounded ${
-                                  inj.status === 'Out' ? 'bg-red-500/20 text-red-400' : 
-                                  inj.status === 'Doubtful' ? 'bg-orange-500/20 text-orange-400' :
-                                  'bg-yellow-500/20 text-yellow-400'
-                                }`}>{inj.status}</span>
-                              </div>
-                            ))}
+                            {(() => {
+                              // Sort injuries by player popularity (stars first)
+                              const teamAbbr = selectedTeam?.abbreviation || '';
+                              const rosterContext = teamDetails.roster 
+                                ? buildRosterContext(teamDetails.roster, teamAbbr, activeSport)
+                                : {};
+                              
+                              const sortedInjuries = [...teamDetails.injuries].sort((a, b) => {
+                                // Evaluate star signals for each injured player
+                                const evalA = evaluateStarSignals(a.name, teamAbbr, activeSport, rosterContext);
+                                const evalB = evaluateStarSignals(b.name, teamAbbr, activeSport, rosterContext);
+                                
+                                // Sort by signal count (more signals = more important)
+                                if (evalB.signalCount !== evalA.signalCount) {
+                                  return evalB.signalCount - evalA.signalCount;
+                                }
+                                
+                                // Secondary sort: by severity (Out > Doubtful > Questionable)
+                                const severityOrder = { 'Out': 3, 'Doubtful': 2, 'Questionable': 1, 'Day-To-Day': 0 };
+                                return (severityOrder[b.status] || 0) - (severityOrder[a.status] || 0);
+                              });
+                              
+                              return sortedInjuries.slice(0, 4).map((inj, i) => {
+                                // Check if this is a notable star
+                                const starEval = evaluateStarSignals(inj.name, teamAbbr, activeSport, rosterContext);
+                                const isNotableStar = starEval.isNotableStar;
+                                
+                                return (
+                                  <div key={i} className={`flex items-center justify-between px-4 py-3 ${i > 0 ? 'border-t border-white/5' : ''}`}>
+                                    <div>
+                                      <div className="text-sm font-medium flex items-center gap-1.5">
+                                        {inj.name}
+                                        {isNotableStar && (
+                                          <span className="text-[9px] text-yellow-400 bg-yellow-500/10 px-1.5 py-0.5 rounded">★</span>
+                                        )}
+                                      </div>
+                                      <div className="text-xs text-gray-500">{inj.position}{inj.type ? ` · ${inj.type}` : ''}</div>
+                                    </div>
+                                    <span className={`text-xs font-semibold px-2.5 py-1 rounded ${
+                                      inj.status === 'Out' ? 'bg-red-500/20 text-red-400' : 
+                                      inj.status === 'Doubtful' ? 'bg-orange-500/20 text-orange-400' :
+                                      'bg-yellow-500/20 text-yellow-400'
+                                    }`}>{inj.status}</span>
+                                  </div>
+                                );
+                              });
+                            })()}
                           </div>
                         ) : (
                           <div className="bg-white/[0.03] rounded-xl px-4 py-3 text-sm text-emerald-400">
