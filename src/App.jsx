@@ -818,6 +818,41 @@ const UNAVAILABLE_STATUSES = [
   'Day-To-Day', // Conservative: exclude day-to-day too
 ];
 
+// Statuses that EXCLUDE a player from Starting 5 (stricter than star filtering)
+// A star can be mentioned as "out", but they can NEVER appear in Starting 5
+const STARTING_5_EXCLUDED_STATUSES = [
+  'Out', 'OUT',
+  'Injured Reserve', 'IR', 
+  'Doubtful', 'DOUBTFUL',
+  'Suspended', 'SUSPENDED',
+  'Not With Team', 'NWT',
+  'Day-To-Day', 'DTD',
+  'Questionable', // Even questionable players shouldn't be shown as confirmed starters
+];
+
+// Check if a player is AVAILABLE for Starting 5 (not injured/out)
+// This is the STRICTEST check - used only for lineup display
+const isPlayerAvailableForStarting5 = (player) => {
+  if (!player) return false;
+  
+  const status = player.status || player.injuryStatus || '';
+  const statusUpper = status.toUpperCase();
+  
+  // If player has any excluded status, they cannot be in Starting 5
+  for (const excluded of STARTING_5_EXCLUDED_STATUSES) {
+    if (statusUpper === excluded.toUpperCase() || status === excluded) {
+      return false;
+    }
+  }
+  
+  // Also check if player is explicitly marked as injured
+  if (player.injured === true || player.isInjured === true) {
+    return false;
+  }
+  
+  return true;
+};
+
 // Statuses that mean player is likely available
 const AVAILABLE_STATUSES = [
   'Active', 'active', 'ACTIVE',
@@ -831,6 +866,64 @@ const INJURY_CACHE = {};
 // HARD FIX #3: Track which team rosters we've verified
 // { 'sport:teamAbbr': { updatedAt, playerNames: Set } }
 const ROSTER_CACHE = {};
+
+// ============================================
+// LINEUP CACHE - Real Starting Lineup Data
+// ============================================
+// This is the source of truth for who is ACTUALLY starting
+// Priority: UNDERDOG > ESPN_CONFIRMED > ESPN_DEPTH_CHART > INFERRED
+// { 'sport:teamAbbr:gameId': { starters: string[], source: string, confirmed: boolean, lastUpdated: number } }
+const LINEUP_CACHE = {};
+
+const LINEUP_SOURCES = {
+  UNDERDOG: 'UNDERDOG',           // Highest priority - real confirmed lineups
+  ESPN_CONFIRMED: 'ESPN_CONFIRMED', // ESPN marked starters
+  ESPN_PARTIAL: 'ESPN_PARTIAL',   // Some ESPN starters available
+  INFERRED: 'INFERRED',           // Derived from position/experience
+};
+
+// Update lineup cache with confirmed starters
+// Called when we receive real lineup data from any source
+const updateLineupCache = (teamAbbr, sport, gameId, starters, source) => {
+  if (!teamAbbr || !sport || !Array.isArray(starters)) return;
+  
+  const key = `${sport}:${teamAbbr}:${gameId || 'current'}`;
+  const now = Date.now();
+  
+  // Only update if this is a higher-priority source than existing
+  const existing = LINEUP_CACHE[key];
+  const sourcePriority = { 
+    [LINEUP_SOURCES.UNDERDOG]: 4, 
+    [LINEUP_SOURCES.ESPN_CONFIRMED]: 3, 
+    [LINEUP_SOURCES.ESPN_PARTIAL]: 2,
+    [LINEUP_SOURCES.INFERRED]: 1 
+  };
+  
+  if (!existing || sourcePriority[source] >= sourcePriority[existing.source]) {
+    LINEUP_CACHE[key] = {
+      starters,
+      source,
+      confirmed: source === LINEUP_SOURCES.UNDERDOG || source === LINEUP_SOURCES.ESPN_CONFIRMED,
+      lastUpdated: now,
+      lastUpdatedFormatted: new Date(now).toLocaleTimeString('en-US', { 
+        hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' 
+      })
+    };
+    
+    console.log(`[Gamenight] Lineup cache updated for ${key}:`, {
+      starters,
+      source,
+      confirmed: LINEUP_CACHE[key].confirmed,
+      time: LINEUP_CACHE[key].lastUpdatedFormatted
+    });
+  }
+};
+
+// Get cached lineup for a team
+const getCachedLineup = (teamAbbr, sport, gameId) => {
+  const key = `${sport}:${teamAbbr}:${gameId || 'current'}`;
+  return LINEUP_CACHE[key] || null;
+};
 
 // Update injury cache when roster data is fetched
 // HARD FIX #3: Also tracks roster membership
@@ -5134,31 +5227,59 @@ export default function GamenightApp() {
                               );
                             }
                             
-                            // Get players ESPN marked as starters
-                            const espnStarters = roster.filter(p => p.isStarter);
-                            const nonStarters = roster.filter(p => !p.isStarter);
-                            
-                            // Build roster context for multi-signal star evaluation
                             const teamAbbr = selectedTeam?.abbreviation || '';
                             const rosterContext = buildRosterContext(roster, teamAbbr, 'nba');
+                            
+                            // ============================================
+                            // STEP 0: STRICT INJURY SEPARATION (FIRST!)
+                            // ============================================
+                            // Injured players can NEVER appear in Starting 5
+                            // This is lineup TRUTH, not star importance
+                            
+                            const injuredPlayers = roster.filter(p => !isPlayerAvailableForStarting5(p));
+                            const availablePlayers = roster.filter(p => isPlayerAvailableForStarting5(p));
+                            
+                            // Identify injured STARS (for "Out Tonight" section)
+                            const injuredStars = injuredPlayers.filter(player => {
+                              const name = player.name || player.displayName;
+                              const eval_ = evaluateStarSignals(name, teamAbbr, 'nba', rosterContext);
+                              return eval_.isNotableStar;
+                            }).sort((a, b) => {
+                              // Sort by star signal count
+                              const evalA = evaluateStarSignals(a.name || a.displayName, teamAbbr, 'nba', rosterContext);
+                              const evalB = evaluateStarSignals(b.name || b.displayName, teamAbbr, 'nba', rosterContext);
+                              return evalB.signalCount - evalA.signalCount;
+                            });
+                            
+                            // Log injured stars for debugging
+                            if (injuredStars.length > 0) {
+                              console.log(`[Gamenight] Injured stars for ${teamAbbr}:`, 
+                                injuredStars.map(p => `${p.name} (${p.status})`));
+                            }
+                            
+                            // ============================================
+                            // STEP 1: DERIVE Starting 5 from AVAILABLE players only
+                            // ============================================
+                            // Priority: ESPN starters > Position fill > Experience
+                            
+                            // Get ESPN-marked starters that are AVAILABLE (not injured)
+                            const espnStartersAvailable = availablePlayers.filter(p => p.isStarter);
+                            const nonStartersAvailable = availablePlayers.filter(p => !p.isStarter);
                             
                             // Position priority for filling gaps
                             const positionPriority = ['PG', 'SG', 'SF', 'PF', 'C'];
                             const fallbackPositions = ['G', 'F', 'G-F', 'F-G', 'F-C', 'C-F'];
                             
-                            // ============================================
-                            // STEP 1: DERIVE Starting 5 (data-driven)
-                            // ============================================
-                            let displayStarters = [...espnStarters];
-                            let derivationMethod = espnStarters.length >= 5 ? 'ESPN_CONFIRMED' : 
-                                                  espnStarters.length > 0 ? 'ESPN_PARTIAL' : 'INFERRED';
+                            let displayStarters = [...espnStartersAvailable];
+                            let lineupSource = espnStartersAvailable.length >= 5 ? 'ESPN_CONFIRMED' : 
+                                              espnStartersAvailable.length > 0 ? 'ESPN_PARTIAL' : 'INFERRED';
                             
-                            // If we have less than 5 ESPN starters, fill by position + experience
+                            // If we have less than 5 available ESPN starters, fill from available pool
                             if (displayStarters.length < 5) {
                               const filledPositions = displayStarters.map(p => p.position);
                               
-                              // Sort non-starters by experience (proxy for minutes/role)
-                              const sortedNonStarters = [...nonStarters].sort((a, b) => 
+                              // Sort available non-starters by experience
+                              const sortedAvailable = [...nonStartersAvailable].sort((a, b) => 
                                 (b.experience || 0) - (a.experience || 0)
                               );
                               
@@ -5167,12 +5288,12 @@ export default function GamenightApp() {
                                 if (displayStarters.length >= 5) return;
                                 if (filledPositions.some(fp => fp === pos)) return;
                                 
-                                const candidate = sortedNonStarters.find(p => 
+                                const candidate = sortedAvailable.find(p => 
                                   p.position === pos && !displayStarters.includes(p)
                                 );
                                 if (candidate) {
                                   candidate._inferred = true;
-                                  candidate._inferredReason = 'Position fill';
+                                  candidate._inferredReason = 'Position fill (available player)';
                                   displayStarters.push(candidate);
                                   filledPositions.push(pos);
                                 }
@@ -5182,7 +5303,7 @@ export default function GamenightApp() {
                               fallbackPositions.forEach(pos => {
                                 if (displayStarters.length >= 5) return;
                                 
-                                const candidate = sortedNonStarters.find(p => 
+                                const candidate = sortedAvailable.find(p => 
                                   (p.position === pos || p.position?.includes(pos.charAt(0))) && 
                                   !displayStarters.includes(p)
                                 );
@@ -5193,89 +5314,57 @@ export default function GamenightApp() {
                                 }
                               });
                               
-                              // Final fallback: top remaining by experience
+                              // Final fallback: top available by experience
                               if (displayStarters.length < 5) {
-                                const remaining = sortedNonStarters.filter(p => !displayStarters.includes(p));
+                                const remaining = sortedAvailable.filter(p => !displayStarters.includes(p));
                                 while (displayStarters.length < 5 && remaining.length > 0) {
                                   const next = remaining.shift();
                                   next._inferred = true;
-                                  next._inferredReason = 'Experience fallback';
+                                  next._inferredReason = 'Experience fallback (available)';
                                   displayStarters.push(next);
                                 }
                               }
                             }
                             
                             // ============================================
-                            // STEP 2: VALIDATE - Check for missing stars
+                            // STEP 2: VALIDATE (Stars are informational, NOT override)
                             // ============================================
-                            // Evaluate each roster player for star signals
-                            const starValidation = {
-                              detectedStars: [],
-                              missingStars: [],
-                              inconsistencies: []
-                            };
+                            // Check if any available stars are missing from Starting 5
+                            // This is for LOGGING only - we do NOT add injured stars
                             
-                            roster.forEach(player => {
+                            const availableStars = availablePlayers.filter(player => {
                               const name = player.name || player.displayName;
-                              const evaluation = evaluateStarSignals(name, teamAbbr, 'nba', rosterContext);
-                              
-                              if (evaluation.isNotableStar) {
-                                starValidation.detectedStars.push({
-                                  player,
-                                  signals: evaluation.signals,
-                                  signalCount: evaluation.signalCount
-                                });
-                                
-                                // Check if this star is in our derived Starting 5
-                                const inStarting5 = displayStarters.some(s => s.id === player.id);
-                                if (!inStarting5) {
-                                  starValidation.missingStars.push({
-                                    player,
-                                    signals: evaluation.signals,
-                                    signalCount: evaluation.signalCount
-                                  });
-                                  starValidation.inconsistencies.push(
-                                    `Star "${name}" (${evaluation.signalCount} signals: ${evaluation.signals.join(', ')}) missing from Starting 5`
-                                  );
-                                }
-                              }
+                              const eval_ = evaluateStarSignals(name, teamAbbr, 'nba', rosterContext);
+                              return eval_.isNotableStar;
                             });
                             
-                            // Log inconsistencies
-                            if (starValidation.inconsistencies.length > 0) {
-                              console.warn(`[Gamenight] Starting 5 data inconsistency for ${teamAbbr}:`, starValidation.inconsistencies);
-                            }
+                            const missingAvailableStars = availableStars.filter(star => 
+                              !displayStarters.some(s => s.id === star.id)
+                            );
                             
-                            // ============================================
-                            // STEP 3: RECONCILE - Add missing stars with flags
-                            // ============================================
-                            // Only add missing stars if we have room AND they qualify with 2+ signals
-                            starValidation.missingStars.forEach(({ player, signals, signalCount }) => {
-                              // Don't exceed 5 starters - but if a 2+ signal star is missing, swap out lowest-confidence player
+                            // If an AVAILABLE star is missing, we can add them (they're not injured)
+                            missingAvailableStars.forEach(star => {
                               if (displayStarters.length < 5) {
-                                player._inferredStarter = true;
-                                player._inferredReason = `Multi-signal star (${signals.join(', ')}) missing from ESPN data`;
-                                displayStarters.push(player);
-                              } else if (signalCount >= 2) {
-                                // Find lowest-confidence inferred player to potentially swap
-                                const inferredPlayers = displayStarters.filter(s => s._inferred && !s._inferredStarter);
-                                if (inferredPlayers.length > 0) {
-                                  // Replace the last inferred non-star with this star
-                                  const toReplace = inferredPlayers[inferredPlayers.length - 1];
-                                  const replaceIdx = displayStarters.indexOf(toReplace);
-                                  if (replaceIdx !== -1) {
-                                    console.log(`[Gamenight] Swapping inferred player for star: ${toReplace.name} -> ${player.name}`);
-                                    player._inferredStarter = true;
-                                    player._inferredReason = `Multi-signal star (${signals.join(', ')}) prioritized over inferred starter`;
-                                    displayStarters[replaceIdx] = player;
+                                star._inferred = true;
+                                star._inferredReason = 'Available star added';
+                                displayStarters.push(star);
+                              } else {
+                                // Swap lowest-confidence inferred player for available star
+                                const inferredNonStars = displayStarters.filter(s => 
+                                  s._inferred && !availableStars.some(as => as.id === s.id)
+                                );
+                                if (inferredNonStars.length > 0) {
+                                  const toReplace = inferredNonStars[inferredNonStars.length - 1];
+                                  const idx = displayStarters.indexOf(toReplace);
+                                  if (idx !== -1) {
+                                    console.log(`[Gamenight] Swapping for available star: ${toReplace.name} -> ${star.name}`);
+                                    star._inferred = true;
+                                    star._inferredReason = 'Available star prioritized';
+                                    displayStarters[idx] = star;
                                   }
                                 }
                               }
                             });
-                            
-                            // Determine data quality flags for UI
-                            const hasDataInconsistency = starValidation.inconsistencies.length > 0;
-                            const starterDataIncomplete = espnStarters.length < 5;
                             
                             // Sort starters by position order for display
                             const posOrder = { 'PG': 1, 'G': 2, 'SG': 3, 'SF': 4, 'F': 5, 'PF': 6, 'C': 7 };
@@ -5283,32 +5372,69 @@ export default function GamenightApp() {
                               (posOrder[a.position] || 99) - (posOrder[b.position] || 99)
                             );
                             
-                            // Bench is everyone not in displayStarters
-                            const displayBench = roster.filter(p => !displayStarters.includes(p));
+                            // Bench = available players not in Starting 5
+                            const displayBench = availablePlayers.filter(p => !displayStarters.includes(p));
                             
-                            // Determine label
-                            const hasFullESPNStarters = espnStarters.length >= 5;
-                            const hasPartialESPNStarters = espnStarters.length > 0 && espnStarters.length < 5;
-                            const hasNoESPNStarters = espnStarters.length === 0;
+                            // Data quality flags
+                            const starterDataIncomplete = espnStartersAvailable.length < 5;
+                            const hasInjuredStars = injuredStars.length > 0;
+                            const hasNoESPNStarters = espnStartersAvailable.length === 0;
+                            const lineupLastUpdated = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' });
+                            
+                            // Log lineup derivation for debugging
+                            console.log(`[Gamenight] Starting 5 for ${teamAbbr}:`, {
+                              source: lineupSource,
+                              starters: displayStarters.map(p => p.name),
+                              injuredExcluded: injuredPlayers.map(p => `${p.name} (${p.status})`),
+                              updated: lineupLastUpdated
+                            });
                             
                             return (
                               <>
+                                {/* OUT TONIGHT - Injured stars shown separately */}
+                                {hasInjuredStars && (
+                                  <div className="mb-4">
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <span className="w-2 h-2 rounded-full bg-red-500" />
+                                      <span className="text-xs font-bold text-red-400 uppercase tracking-wider">Out Tonight</span>
+                                    </div>
+                                    <div className="bg-red-500/5 rounded-xl border border-red-500/10 overflow-hidden">
+                                      {injuredStars.slice(0, 3).map((player, i) => (
+                                        <div key={player.id || i} className={`flex items-center justify-between px-4 py-2.5 ${i > 0 ? 'border-t border-red-500/10' : ''}`}>
+                                          <div className="flex items-center gap-3">
+                                            {player.headshot ? (
+                                              <img src={player.headshot} alt="" className="w-8 h-8 rounded-full object-cover opacity-50" />
+                                            ) : (
+                                              <div className="w-8 h-8 rounded-full bg-red-500/10 flex items-center justify-center text-xs font-bold text-red-400">
+                                                {(player.name || '?').charAt(0)}
+                                              </div>
+                                            )}
+                                            <div>
+                                              <div className="text-sm font-medium text-gray-400 flex items-center gap-1.5">
+                                                {player.name}
+                                                <span className="text-[9px] text-yellow-400 bg-yellow-500/10 px-1.5 py-0.5 rounded">★</span>
+                                              </div>
+                                              <div className="text-xs text-gray-600">{player.position}</div>
+                                            </div>
+                                          </div>
+                                          <span className="text-xs font-semibold px-2 py-1 rounded bg-red-500/20 text-red-400">{player.status || 'OUT'}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                
                                 {/* Starting 5 */}
                                 <div className="mb-6">
                                   <div className="flex items-center gap-2 mb-3">
                                     <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Starting 5</span>
-                                    {hasPartialESPNStarters && !hasDataInconsistency && (
+                                    {starterDataIncomplete && !hasNoESPNStarters && (
                                       <span className="text-[10px] text-yellow-500 bg-yellow-500/10 px-2 py-0.5 rounded-full">Partial Lineup</span>
                                     )}
                                     {hasNoESPNStarters && (
                                       <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">Projected</span>
                                     )}
-                                    {hasDataInconsistency && (
-                                      <span className="text-[10px] text-yellow-500 bg-yellow-500/10 px-2 py-0.5 rounded-full" 
-                                            title={starValidation.inconsistencies.join('; ')}>
-                                        Starter data incomplete
-                                      </span>
-                                    )}
+                                    <span className="text-[10px] text-gray-600 ml-auto">{lineupSource} · {lineupLastUpdated} ET</span>
                                   </div>
                                   
                                   {displayStarters.length === 0 ? (
@@ -5357,6 +5483,21 @@ export default function GamenightApp() {
                                           sport="nba"
                                         />
                                       ))}
+                                    </div>
+                                  </div>
+                                )}
+                                
+                                {/* Injured Players (non-stars) */}
+                                {injuredPlayers.length > injuredStars.length && (
+                                  <div className="mt-4 pt-4 border-t border-white/5">
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <span className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                        Other Injured ({injuredPlayers.length - injuredStars.length})
+                                      </span>
+                                    </div>
+                                    <div className="text-xs text-gray-600">
+                                      {injuredPlayers.filter(p => !injuredStars.includes(p)).slice(0, 5).map(p => p.name).join(', ')}
+                                      {injuredPlayers.length - injuredStars.length > 5 && ` +${injuredPlayers.length - injuredStars.length - 5} more`}
                                     </div>
                                   </div>
                                 )}
