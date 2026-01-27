@@ -4068,6 +4068,7 @@ export default function GamenightApp() {
   const [pickState, setPickState] = useState(null); // Pick State Machine state
   const [pickMetadata, setPickMetadata] = useState(null); // Pick lifecycle metadata
   const [alternateGames, setAlternateGames] = useState([]); // Next 2-3 best games
+  const [expandedAlternateId, setExpandedAlternateId] = useState(null); // Which alternate game's breakdown is shown
   const [games, setGames] = useState([]);
   const [challenge, setChallenge] = useState(null);
   const [userStats, setUserStats] = useState({ points: 0, streak: 0, accuracy: 0 });
@@ -4654,11 +4655,52 @@ export default function GamenightApp() {
                                 )}
                               </div>
                             </div>
-                            <div className="text-right">
+                            {/* Clickable score to toggle breakdown */}
+                            <div 
+                              className="text-right cursor-pointer hover:bg-white/5 rounded-lg px-2 py-1 -mr-2 transition-colors"
+                              onClick={() => setExpandedAlternateId(expandedAlternateId === g.id ? null : g.id)}
+                            >
                               <div className="text-[8px] text-gray-600 uppercase tracking-wide">Watch</div>
-                              <span className="text-lg font-extrabold text-gray-500">{g.score}</span>
+                              <div className="flex items-center gap-1">
+                                <span className="text-lg font-extrabold text-gray-500">{g.score}</span>
+                                <span className={`text-gray-500 text-xs transition-transform ${expandedAlternateId === g.id ? 'rotate-180' : ''}`}>▼</span>
+                              </div>
                             </div>
                           </div>
+                          
+                          {/* Score Breakdown (shown when expanded) */}
+                          {expandedAlternateId === g.id && g.components && (
+                            <div className="mt-3 pt-3 border-t border-white/5 animate-fadeIn">
+                              <div className="grid grid-cols-5 gap-1 p-2 bg-white/[0.02] rounded-xl">
+                                {[
+                                  { key: 'stakes', label: 'Stakes', max: 30 },
+                                  { key: 'starPower', label: 'Stars', max: 20 },
+                                  { key: 'competitiveness', label: 'Close', max: 20 },
+                                  { key: 'narrative', label: 'Story', max: 10 },
+                                  { key: 'accessibility', label: 'Access', max: 10 }
+                                ].map(({ key, label, max }) => {
+                                  const val = g.components[key] || 0;
+                                  const pct = (val / max) * 100;
+                                  return (
+                                    <div key={key} className="text-center">
+                                      <div className="text-[8px] text-gray-500 uppercase mb-1">{label}</div>
+                                      <div className="h-1 bg-white/10 rounded-full overflow-hidden mb-1">
+                                        <div 
+                                          className={`h-full rounded-full ${pct >= 70 ? 'bg-green-500' : pct >= 50 ? 'bg-orange-500' : 'bg-gray-500'}`}
+                                          style={{ width: `${pct}%` }}
+                                        />
+                                      </div>
+                                      <div className="text-[10px] font-semibold text-gray-400">{val}</div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              {/* Why Watch reason if available */}
+                              {g.whyWatch && (
+                                <div className="mt-2 text-xs text-gray-400 text-center">{g.whyWatch}</div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
