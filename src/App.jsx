@@ -4588,6 +4588,9 @@ function GamenightApp() {
   const [playerLoading, setPlayerLoading] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showPaywall, setShowPaywall] = useState(false);
+  const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
+  const [showTermsOfService, setShowTermsOfService] = useState(false);
+  const [showHelpCenter, setShowHelpCenter] = useState(false);
   const [toast, setToast] = useState(null);
   const [appLoaded, setAppLoaded] = useState(false);
   
@@ -5502,12 +5505,12 @@ function GamenightApp() {
               <p className="text-sm text-gray-500">Customize your experience</p>
             </div>
 
-            {/* Preferences Section */}
+            {/* Preferences Section - Hidden until features are implemented
             <div className="mb-6">
               <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3 px-1">Preferences</div>
               <div className="bg-white/[0.02] rounded-2xl border border-white/5 overflow-hidden">
                 {[
-                  ['bettingSignals', 'Betting Signals', 'Show odds and line movement', Icons.BarChart],
+                  // ['bettingSignals', 'Betting Signals', 'Show odds and line movement', Icons.BarChart],
                 ].map(([k, label, desc, Icon], idx, arr) => (
                   <div 
                     key={k} 
@@ -5533,8 +5536,9 @@ function GamenightApp() {
                 ))}
               </div>
             </div>
+            */}
 
-            {/* Notifications Section */}
+            {/* Notifications Section - Hidden until push notification and email backends are implemented
             <div className="mb-6">
               <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3 px-1">Notifications</div>
               <div className="bg-white/[0.02] rounded-2xl border border-white/5 overflow-hidden">
@@ -5566,18 +5570,19 @@ function GamenightApp() {
                 ))}
               </div>
             </div>
+            */}
 
             {/* Support Section */}
             <div className="mb-6">
               <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3 px-1">Support</div>
               <div className="bg-white/[0.02] rounded-2xl border border-white/5 overflow-hidden">
                 {[
-                  ['Help Center', 'Get help with the app', Icons.HelpCircle, null],
-                  ['Contact Us', 'support@gamenight.app', Icons.Mail, 'mailto:support@gamenight.app'],
-                ].map(([label, desc, Icon, href], idx, arr) => (
+                  ['Help Center', 'Get help with the app', Icons.HelpCircle, () => setShowHelpCenter(true)],
+                  ['Contact Us', 'support@gamenight.app', Icons.Mail, () => window.location.href = 'mailto:support@gamenight.app'],
+                ].map(([label, desc, Icon, onClick], idx, arr) => (
                   <div 
                     key={label} 
-                    onClick={() => href && window.open(href, '_blank')}
+                    onClick={onClick}
                     className={`flex items-center justify-between p-4 cursor-pointer hover:bg-white/[0.02] transition-colors active:bg-white/[0.04] ${idx < arr.length - 1 ? 'border-b border-white/5' : ''}`}
                   >
                     <div className="flex items-center gap-3.5">
@@ -5593,19 +5598,32 @@ function GamenightApp() {
               </div>
             </div>
 
-            {/* Purchases Section */}
+            {/* Purchases Section - Only show on native apps where IAP is available */}
             <div className="mb-6">
               <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3 px-1">Purchases</div>
               <div className="bg-white/[0.02] rounded-2xl border border-white/5 overflow-hidden">
                 <div 
-                  onClick={() => showToastMsg('Purchases will be restorable once available.')}
+                  onClick={() => {
+                    // Check if running in a native app context (Capacitor/Cordova)
+                    const isNativeApp = typeof window !== 'undefined' && (window.Capacitor || window.cordova);
+                    if (isNativeApp) {
+                      // TODO: Implement actual restore when IAP is integrated
+                      showToastMsg('Restoring purchases...');
+                    } else {
+                      showToastMsg('Restore is available in the iOS and Android apps.');
+                    }
+                  }}
                   className="flex items-center justify-between p-4 cursor-pointer hover:bg-white/[0.02] transition-colors active:bg-white/[0.04]"
                 >
                   <div className="flex items-center gap-3.5">
                     <div className="w-9 h-9 bg-white/5 rounded-xl flex items-center justify-center text-gray-400"><Icons.RefreshCw /></div>
                     <div>
                       <div className="text-[15px] text-white font-medium">Restore Purchases</div>
-                      <div className="text-[13px] text-gray-500">Restore previous purchases</div>
+                      <div className="text-[13px] text-gray-500">
+                        {typeof window !== 'undefined' && (window.Capacitor || window.cordova) 
+                          ? 'Restore previous purchases' 
+                          : 'Available in iOS/Android app'}
+                      </div>
                     </div>
                   </div>
                   <div className="text-gray-600"><Icons.ChevronRight /></div>
@@ -5618,11 +5636,12 @@ function GamenightApp() {
               <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3 px-1">Legal</div>
               <div className="bg-white/[0.02] rounded-2xl border border-white/5 overflow-hidden">
                 {[
-                  ['Privacy Policy', Icons.Shield],
-                  ['Terms of Service', Icons.FileText],
-                ].map(([label, Icon], idx, arr) => (
+                  ['Privacy Policy', Icons.Shield, () => setShowPrivacyPolicy(true)],
+                  ['Terms of Service', Icons.FileText, () => setShowTermsOfService(true)],
+                ].map(([label, Icon, onClick], idx, arr) => (
                   <div 
                     key={label} 
+                    onClick={onClick}
                     className={`flex items-center justify-between p-4 cursor-pointer hover:bg-white/[0.02] transition-colors active:bg-white/[0.04] ${idx < arr.length - 1 ? 'border-b border-white/5' : ''}`}
                   >
                     <div className="flex items-center gap-3.5">
@@ -7027,7 +7046,11 @@ function GamenightApp() {
               
               {/* Restore Purchases */}
               <button 
-                onClick={() => { setShowPaywall(false); showToastMsg('Purchases will be restorable once available.'); }}
+                onClick={() => { 
+                  const isNativeApp = typeof window !== 'undefined' && (window.Capacitor || window.cordova);
+                  setShowPaywall(false); 
+                  showToastMsg(isNativeApp ? 'Restoring purchases...' : 'Restore is available in the iOS and Android apps.');
+                }}
                 className="w-full mt-4 py-3 text-sm text-gray-400 hover:text-white transition-colors"
               >
                 Restore Purchases
@@ -7037,6 +7060,263 @@ function GamenightApp() {
               <p className="text-[11px] text-gray-600 mt-4 leading-relaxed">
                 Premium features provide enhanced game information for entertainment purposes only. No betting or gambling functionality included.
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Privacy Policy Modal */}
+      {showPrivacyPolicy && (
+        <div className="fixed inset-0 bg-[#0a0a0f] z-[100] overflow-y-auto">
+          <div className="max-w-2xl mx-auto px-6 py-8">
+            <div className="flex items-center justify-between mb-8">
+              <h1 className="text-2xl font-extrabold">Privacy Policy</h1>
+              <AnimatedButton onClick={() => setShowPrivacyPolicy(false)} className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center text-gray-400">
+                <Icons.X />
+              </AnimatedButton>
+            </div>
+            
+            <div className="text-gray-300 space-y-6 text-[15px] leading-relaxed">
+              <p className="text-gray-400 text-sm">Last updated: January 2025</p>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Overview</h2>
+                <p>Gamenight ("we", "our", or "the app") is committed to protecting your privacy. This policy explains how we collect, use, and safeguard your information when you use our mobile application.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Information We Collect</h2>
+                <p className="mb-3"><strong className="text-white">Device Identifier:</strong> We generate a random, anonymous device ID stored locally on your device. This ID is used to:</p>
+                <ul className="list-disc list-inside space-y-1 ml-2 text-gray-400">
+                  <li>Save your app preferences and settings</li>
+                  <li>Track your challenge participation and streaks</li>
+                  <li>Restore your data if you reinstall the app</li>
+                </ul>
+                <p className="mt-3"><strong className="text-white">Preferences:</strong> Your settings (notification preferences, display options) are stored locally on your device and may be synced to our servers to enable features like notifications.</p>
+                <p className="mt-3"><strong className="text-white">Challenge Data:</strong> Your daily pick predictions and results are stored to calculate streaks and leaderboard positions.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Third-Party Data</h2>
+                <p><strong className="text-white">ESPN:</strong> Game schedules, scores, team information, and player data are provided by ESPN's public APIs. We do not control ESPN's data practices. No personal information is shared with ESPN through our app.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Data Storage</h2>
+                <p>Your data is stored using Supabase, a secure cloud database provider. Data is encrypted in transit and at rest. We retain your data until you request deletion or uninstall the app.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Your Rights</h2>
+                <p className="mb-3">You have the right to:</p>
+                <ul className="list-disc list-inside space-y-1 ml-2 text-gray-400">
+                  <li>Access your data</li>
+                  <li>Request deletion of your data</li>
+                  <li>Opt out of notifications</li>
+                  <li>Clear local storage at any time</li>
+                </ul>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Data Deletion</h2>
+                <p>To request deletion of all your data, email us at <a href="mailto:support@gamenight.app" className="text-orange-400 hover:underline">support@gamenight.app</a> with the subject "Data Deletion Request". Include your device ID (found in Settings) if possible. We will process your request within 30 days.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Children's Privacy</h2>
+                <p>Gamenight is not intended for children under 13. We do not knowingly collect information from children under 13.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Changes to This Policy</h2>
+                <p>We may update this policy from time to time. We will notify you of significant changes through the app.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Contact Us</h2>
+                <p>Questions about this policy? Email us at <a href="mailto:support@gamenight.app" className="text-orange-400 hover:underline">support@gamenight.app</a></p>
+              </section>
+            </div>
+            
+            <div className="mt-8 pt-6 border-t border-white/10">
+              <AnimatedButton onClick={() => setShowPrivacyPolicy(false)} className="w-full py-4 bg-white/10 rounded-2xl font-semibold hover:bg-white/20 transition-colors">
+                Close
+              </AnimatedButton>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Terms of Service Modal */}
+      {showTermsOfService && (
+        <div className="fixed inset-0 bg-[#0a0a0f] z-[100] overflow-y-auto">
+          <div className="max-w-2xl mx-auto px-6 py-8">
+            <div className="flex items-center justify-between mb-8">
+              <h1 className="text-2xl font-extrabold">Terms of Service</h1>
+              <AnimatedButton onClick={() => setShowTermsOfService(false)} className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center text-gray-400">
+                <Icons.X />
+              </AnimatedButton>
+            </div>
+            
+            <div className="text-gray-300 space-y-6 text-[15px] leading-relaxed">
+              <p className="text-gray-400 text-sm">Last updated: January 2025</p>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Acceptance of Terms</h2>
+                <p>By downloading, installing, or using Gamenight, you agree to be bound by these Terms of Service. If you do not agree, do not use the app.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Description of Service</h2>
+                <p>Gamenight provides sports game recommendations and entertainment features including daily picks, game information, and prediction challenges. All content is for <strong className="text-white">entertainment purposes only</strong>.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">No Gambling</h2>
+                <p className="text-orange-400 font-medium">Gamenight does not facilitate, encourage, or enable gambling or betting of any kind. No real money is wagered through this app. The "challenge" feature is a free prediction game with no monetary value.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Data Accuracy</h2>
+                <p>Game schedules, scores, and statistics are provided by third-party sources (ESPN). While we strive for accuracy, we do not guarantee the completeness or accuracy of any information. Do not make decisions based solely on information in this app.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">User Conduct</h2>
+                <p className="mb-3">You agree not to:</p>
+                <ul className="list-disc list-inside space-y-1 ml-2 text-gray-400">
+                  <li>Use the app for any illegal purpose</li>
+                  <li>Attempt to gain unauthorized access to our systems</li>
+                  <li>Interfere with other users' enjoyment of the app</li>
+                  <li>Reverse engineer or attempt to extract source code</li>
+                  <li>Use automated systems to access the app</li>
+                </ul>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Intellectual Property</h2>
+                <p>The Gamenight name, logo, and app design are our property. Team names, logos, and player information are property of their respective owners (NBA, NFL, MLB, ESPN). Use of this content is for informational purposes only.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Premium Features</h2>
+                <p>Premium subscriptions are billed through the App Store or Google Play. Refunds are handled according to the respective store's policies. We reserve the right to modify premium features at any time.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Disclaimer of Warranties</h2>
+                <p>THE APP IS PROVIDED "AS IS" WITHOUT WARRANTIES OF ANY KIND. WE DO NOT WARRANT THAT THE APP WILL BE UNINTERRUPTED, ERROR-FREE, OR FREE OF HARMFUL COMPONENTS.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Limitation of Liability</h2>
+                <p>TO THE MAXIMUM EXTENT PERMITTED BY LAW, WE SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES ARISING FROM YOUR USE OF THE APP.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Termination</h2>
+                <p>We reserve the right to terminate or suspend your access to the app at any time, without notice, for conduct that we believe violates these terms or is harmful to other users.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Changes to Terms</h2>
+                <p>We may modify these terms at any time. Continued use of the app after changes constitutes acceptance of the new terms.</p>
+              </section>
+              
+              <section>
+                <h2 className="text-lg font-semibold text-white mb-3">Contact</h2>
+                <p>Questions about these terms? Email us at <a href="mailto:support@gamenight.app" className="text-orange-400 hover:underline">support@gamenight.app</a></p>
+              </section>
+            </div>
+            
+            <div className="mt-8 pt-6 border-t border-white/10">
+              <AnimatedButton onClick={() => setShowTermsOfService(false)} className="w-full py-4 bg-white/10 rounded-2xl font-semibold hover:bg-white/20 transition-colors">
+                Close
+              </AnimatedButton>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Help Center Modal */}
+      {showHelpCenter && (
+        <div className="fixed inset-0 bg-[#0a0a0f] z-[100] overflow-y-auto">
+          <div className="max-w-2xl mx-auto px-6 py-8">
+            <div className="flex items-center justify-between mb-8">
+              <h1 className="text-2xl font-extrabold">Help Center</h1>
+              <AnimatedButton onClick={() => setShowHelpCenter(false)} className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center text-gray-400">
+                <Icons.X />
+              </AnimatedButton>
+            </div>
+            
+            <div className="space-y-4">
+              {/* FAQ Items */}
+              {[
+                {
+                  q: "What is Today's Pick?",
+                  a: "Every day, Gamenight analyzes all scheduled games and recommends the most watchable matchup based on star power, rivalry intensity, playoff implications, and more. It's your shortcut to finding the best game to watch tonight."
+                },
+                {
+                  q: "How is the game score calculated?",
+                  a: "Each game receives a Watchability Score (0-100) based on multiple factors: star players available, historical rivalry, standings implications, recent team performance, and prime time scheduling. Higher scores = more compelling matchups."
+                },
+                {
+                  q: "What does the Challenge do?",
+                  a: "The daily Challenge lets you predict which team will win Today's Pick. Make your prediction before the game starts, and track your streak on the leaderboard. It's free and just for fun—no real money involved."
+                },
+                {
+                  q: "Why is a star player missing from the matchup?",
+                  a: "Players are automatically filtered out if they're listed as Out, on Injured Reserve, or Suspended according to ESPN's injury reports. Day-to-Day players still appear since they may play."
+                },
+                {
+                  q: "How often is the data updated?",
+                  a: "Game schedules and injury reports refresh every few minutes. You'll see a timestamp showing when data was last updated. If data is more than 30 minutes old, you'll see a warning indicator."
+                },
+                {
+                  q: "What sports are supported?",
+                  a: "Currently NBA, NFL, and MLB. We plan to add NHL and college sports in future updates."
+                },
+                {
+                  q: "When does my daily pick reset?",
+                  a: "Your pick resets at 6:00 AM Eastern Time each day. Any pick made before 6 AM will reset when 6 AM arrives."
+                },
+                {
+                  q: "Can I change my pick after selecting it?",
+                  a: "You can change your pick anytime until the game starts. Once the game begins, your pick is locked in."
+                },
+                {
+                  q: "What happens if my picked game gets postponed?",
+                  a: "If your game is postponed or cancelled, Gamenight automatically selects the next best available game for you."
+                },
+                {
+                  q: "How do I delete my data?",
+                  a: "Email support@gamenight.app with the subject 'Data Deletion Request'. We'll process your request within 30 days."
+                }
+              ].map(({ q, a }, idx) => (
+                <div key={idx} className="bg-white/[0.02] rounded-2xl border border-white/5 p-4">
+                  <div className="font-semibold text-white mb-2">{q}</div>
+                  <div className="text-[14px] text-gray-400 leading-relaxed">{a}</div>
+                </div>
+              ))}
+            </div>
+            
+            <div className="mt-8 p-4 bg-white/[0.02] rounded-2xl border border-white/5">
+              <div className="text-center">
+                <div className="text-[15px] text-white font-medium mb-2">Still need help?</div>
+                <div className="text-[13px] text-gray-400 mb-4">We're here for you</div>
+                <AnimatedButton 
+                  onClick={() => { setShowHelpCenter(false); window.location.href = 'mailto:support@gamenight.app'; }}
+                  className="px-6 py-3 bg-orange-500 text-white rounded-xl font-semibold hover:bg-orange-600 transition-colors"
+                >
+                  Contact Support
+                </AnimatedButton>
+              </div>
+            </div>
+            
+            <div className="mt-8 pt-6 border-t border-white/10">
+              <AnimatedButton onClick={() => setShowHelpCenter(false)} className="w-full py-4 bg-white/10 rounded-2xl font-semibold hover:bg-white/20 transition-colors">
+                Close
+              </AnimatedButton>
             </div>
           </div>
         </div>
