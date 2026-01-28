@@ -1044,13 +1044,41 @@ const validateDataFreshness = (fetchTimestamp, gameStatus = 'scheduled') => {
 // NOTE: Day-To-Day and Questionable are NOT included here - those players often play
 // This list is for matchup card star filtering only
 const UNAVAILABLE_STATUSES = [
-  'Out', 'OUT', 
+  'Out', 'OUT', 'out',
   'Injured Reserve', 'IR',
   'Suspended', 'SUSPENDED',
   'Not With Team', 'NWT',
   'Physically Unable to Perform', 'PUP',
   'Non-Football Injury', 'NFI',
+  // Additional statuses ESPN may return
+  'Injured', 'INJURED',
+  'Did Not Play', 'DNP',
+  'Not Active', 'Inactive', 'INACTIVE',
+  'Disabled List', 'DL', 'IL', // MLB Injured List
+  '10-Day IL', '15-Day IL', '60-Day IL',
 ];
+
+// Helper to check if a status indicates player is OUT
+// More flexible than exact match - catches variations like "Out - Elbow"
+const isUnavailableStatus = (status) => {
+  if (!status) return false;
+  const s = status.toUpperCase();
+  
+  // Exact matches
+  if (UNAVAILABLE_STATUSES.map(x => x.toUpperCase()).includes(s)) return true;
+  
+  // Partial matches for common patterns
+  if (s.startsWith('OUT')) return true;           // "Out - Elbow", "Out (Knee)"
+  if (s.includes('INJURED RESERVE')) return true;
+  if (s.includes('SUSPENDED')) return true;
+  if (s.startsWith('NOT ')) return true;          // "Not Active", "Not With Team"
+  if (s.includes('DISABLED LIST')) return true;
+  if (s.includes('-DAY IL')) return true;         // "10-Day IL", etc.
+  if (s === 'DNP') return true;
+  if (s === 'INACTIVE') return true;
+  
+  return false;
+};
 
 // Statuses that EXCLUDE a player from Starting 5 (stricter than star filtering)
 // A star can be mentioned as "out", but they can NEVER appear in Starting 5
@@ -1248,8 +1276,71 @@ const getUnderdogStarters = (teamAbbr, sport) => {
   return UNDERDOG_LINEUP_CACHE[key]?.starters || null;
 };
 
+// ============================================
+// NAME NORMALIZATION (FIX for cache key mismatches)
+// ============================================
+// ESPN may return "Nikola Jokić" but our lists have "Nikola Jokic"
+// This ensures consistent cache keys regardless of accents/formatting
+
+const normalizePlayerName = (name) => {
+  if (!name) return '';
+  return name
+    .normalize('NFD')                    // Decompose accents (ć → c + combining accent)
+    .replace(/[\u0300-\u036f]/g, '')     // Remove combining diacritical marks
+    .toLowerCase()                        // Case insensitive
+    .replace(/[^a-z\s]/g, '')            // Remove non-letters except spaces
+    .replace(/\s+/g, ' ')                 // Collapse multiple spaces
+    .trim();
+};
+
+// Create a cache key from normalized name
+const makeInjuryCacheKey = (sport, teamAbbr, playerName) => {
+  return `${sport}:${teamAbbr}:${normalizePlayerName(playerName)}`;
+};
+
+// Find a player in the injury cache (handles name variations)
+const findInInjuryCache = (sport, teamAbbr, playerName) => {
+  const normalizedName = normalizePlayerName(playerName);
+  
+  // Try exact normalized key first
+  const normalizedKey = makeInjuryCacheKey(sport, teamAbbr, playerName);
+  if (INJURY_CACHE[normalizedKey]) {
+    console.log(`[Gamenight] 🔍 Cache HIT (normalized): "${playerName}" → key "${normalizedKey}" → status: "${INJURY_CACHE[normalizedKey].status}"`);
+    return INJURY_CACHE[normalizedKey];
+  }
+  
+  // Try original name key
+  const originalKey = `${sport}:${teamAbbr}:${playerName}`;
+  if (INJURY_CACHE[originalKey]) {
+    console.log(`[Gamenight] 🔍 Cache HIT (original): "${playerName}" → key "${originalKey}" → status: "${INJURY_CACHE[originalKey].status}"`);
+    return INJURY_CACHE[originalKey];
+  }
+  
+  // Fallback: search for partial matches (handles "N. Jokic" vs "Nikola Jokic")
+  const searchLastName = normalizedName.split(' ').pop();
+  if (searchLastName && searchLastName.length > 2) {
+    const prefix = `${sport}:${teamAbbr}:`;
+    for (const key in INJURY_CACHE) {
+      if (key.startsWith(prefix) && key.toLowerCase().includes(searchLastName)) {
+        console.log(`[Gamenight] 🔍 Cache HIT (fuzzy): "${playerName}" → key "${key}" → status: "${INJURY_CACHE[key].status}"`);
+        return INJURY_CACHE[key];
+      }
+    }
+  }
+  
+  // NO MATCH - log all keys for this team to debug
+  const prefix = `${sport}:${teamAbbr}:`;
+  const teamKeys = Object.keys(INJURY_CACHE).filter(k => k.startsWith(prefix));
+  console.warn(`[Gamenight] ⚠️ Cache MISS for "${playerName}" (${teamAbbr}). Team has ${teamKeys.length} cached players:`, 
+    teamKeys.slice(0, 5).map(k => k.replace(prefix, '')).join(', ') + (teamKeys.length > 5 ? '...' : '')
+  );
+  
+  return null;
+};
+
 // Update injury cache when roster data is fetched
 // HARD FIX #3: Also tracks roster membership
+// FIX #4: Uses normalized names for cache keys
 const updateInjuryCache = (teamAbbr, sport, roster) => {
   if (!teamAbbr || !sport || !Array.isArray(roster)) return;
   
@@ -1259,14 +1350,24 @@ const updateInjuryCache = (teamAbbr, sport, roster) => {
   
   roster.forEach(player => {
     if (player.name) {
-      const key = `${sport}:${teamAbbr}:${player.name}`;
+      // Use BOTH normalized key AND original name key for maximum matching
+      const normalizedKey = makeInjuryCacheKey(sport, teamAbbr, player.name);
+      const originalKey = `${sport}:${teamAbbr}:${player.name}`;
+      
       playerNames.add(player.name);
-      INJURY_CACHE[key] = {
+      playerNames.add(normalizePlayerName(player.name)); // Also add normalized version
+      
+      const cacheEntry = {
         status: player.status || 'Active',
         injuryType: player.injuryType || null,
         onRoster: true, // HARD FIX #3: Confirmed on roster
-        updatedAt: now
+        updatedAt: now,
+        originalName: player.name // Keep original for debugging
       };
+      
+      // Store under BOTH normalized and original keys for maximum matching
+      INJURY_CACHE[normalizedKey] = cacheEntry;
+      INJURY_CACHE[originalKey] = cacheEntry;
     }
   });
   
@@ -1359,24 +1460,48 @@ const fetchTeamInjuries = async (teamAbbr, sport) => {
     
     // Count and log injured players
     const injuredPlayers = roster.filter(p => 
-      UNAVAILABLE_STATUSES.includes(p.status)
+      isUnavailableStatus(p.status)
     );
     
-    // Check if any known stars are injured
+    // Check if any known stars are injured - use normalized matching
     const teamStars = getPlayersForTeam(teamAbbr, sport);
     const { mvp, allStar } = getStarTiers(sport);
     const allKnownStars = [...teamStars, ...mvp, ...allStar];
+    const normalizedKnownStars = allKnownStars.map(normalizePlayerName);
     
-    const injuredStars = injuredPlayers.filter(p => 
-      allKnownStars.includes(p.name)
-    );
+    // FIX: Match by normalized names
+    const injuredStars = injuredPlayers.filter(p => {
+      const normalizedRosterName = normalizePlayerName(p.name);
+      return allKnownStars.includes(p.name) || normalizedKnownStars.includes(normalizedRosterName);
+    });
+    
+    // ENHANCED LOGGING: Show ALL players with non-Active status
+    const nonActiveAll = roster.filter(p => p.status !== 'Active');
+    if (nonActiveAll.length > 0) {
+      console.log(`[Gamenight] 📋 Non-Active players for ${teamAbbr}:`, 
+        nonActiveAll.map(p => `${p.name} [${p.status}]`).join(', ')
+      );
+    }
+    
+    // Check if any known star has ANY non-Active status (not just UNAVAILABLE)
+    const starsWithIssues = roster.filter(p => {
+      if (p.status === 'Active') return false;
+      const normalizedRosterName = normalizePlayerName(p.name);
+      return allKnownStars.includes(p.name) || normalizedKnownStars.includes(normalizedRosterName);
+    });
+    
+    if (starsWithIssues.length > 0) {
+      console.warn(`[Gamenight] ⚠️ STARS WITH NON-ACTIVE STATUS for ${teamAbbr}:`, 
+        starsWithIssues.map(p => `${p.name} [STATUS: "${p.status}"]`).join(', ')
+      );
+    }
     
     // Log summary
-    console.log(`[Gamenight] Injury prefetch for ${sport}:${teamAbbr}: ${roster.length} players, ${injuredPlayers.length} OUT`);
+    console.log(`[Gamenight] Injury prefetch for ${sport}:${teamAbbr}: ${roster.length} players, ${injuredPlayers.length} OUT (${UNAVAILABLE_STATUSES.slice(0,3).join('/')} statuses)`);
     
     // Log specific injured players (especially stars)
     if (injuredStars.length > 0) {
-      console.warn(`[Gamenight] ⚠️ STARS OUT for ${teamAbbr}:`, 
+      console.warn(`[Gamenight] 🚨 STARS OUT for ${teamAbbr}:`, 
         injuredStars.map(p => `${p.name} (${p.status})`).join(', ')
       );
     }
@@ -1612,8 +1737,8 @@ const isPlayerAvailableForMatchup = (playerName, teamAbbr, sport, rosterContext 
   }
   
   const rosterKey = `${sport}:${teamAbbr}`;
-  const playerKey = `${sport}:${teamAbbr}:${playerName}`;
-  const cached = INJURY_CACHE[playerKey];
+  // FIX #4: Use normalized name lookup to handle accents/variations
+  const cached = findInInjuryCache(sport, teamAbbr, playerName);
   const rosterData = ROSTER_CACHE[rosterKey];
   
   // Evaluate star qualification using multi-signal system
@@ -1622,8 +1747,8 @@ const isPlayerAvailableForMatchup = (playerName, teamAbbr, sport, rosterContext 
   // For players with 2+ star signals, be lenient with roster verification
   // They can only be excluded if EXPLICITLY marked OUT/IR
   if (starQualification.qualifies) {
-    if (cached && UNAVAILABLE_STATUSES.includes(cached.status)) {
-      console.log(`[Gamenight] Star OUT (${cached.status}, ${starQualification.signalCount} signals): ${playerName}`);
+    if (cached && isUnavailableStatus(cached.status)) {
+      console.log(`[Gamenight] ⚠️ Star EXCLUDED (${cached.status}): ${playerName} [cache key matched: ${cached.originalName || 'normalized'}]`);
       return { 
         available: false, 
         verified: true, 
@@ -1632,7 +1757,7 @@ const isPlayerAvailableForMatchup = (playerName, teamAbbr, sport, rosterContext 
       };
     }
     // Star with no explicit OUT status = available
-    console.log(`[Gamenight] Star AVAILABLE (${starQualification.signalCount} signals: ${starQualification.signals.join(', ')}): ${playerName}`);
+    console.log(`[Gamenight] Star AVAILABLE (${starQualification.signalCount} signals: ${starQualification.signals.join(', ')}): ${playerName}${cached ? ` [status: ${cached.status}]` : ' [NO CACHE HIT]'}`);
     return { 
       available: true, 
       verified: cached ? true : false, 
@@ -1646,7 +1771,11 @@ const isPlayerAvailableForMatchup = (playerName, teamAbbr, sport, rosterContext 
     const rosterAge = Date.now() - rosterData.updatedAt;
     const rosterIsStale = rosterAge > 4 * 60 * 60 * 1000; // 4 hours
     
-    if (!rosterIsStale && !rosterData.playerNames.has(playerName)) {
+    // FIX #4: Check both original and normalized name
+    const normalizedName = normalizePlayerName(playerName);
+    const isOnRoster = rosterData.playerNames.has(playerName) || rosterData.playerNames.has(normalizedName);
+    
+    if (!rosterIsStale && !isOnRoster) {
       console.log(`[Gamenight] Player excluded (not on roster): ${playerName} for ${teamAbbr}`);
       return { available: false, verified: true, status: 'NOT_ON_ROSTER', onRoster: false, starQualification };
     }
@@ -1659,7 +1788,7 @@ const isPlayerAvailableForMatchup = (playerName, teamAbbr, sport, rosterContext 
   const cacheAge = Date.now() - cached.updatedAt;
   const isStale = cacheAge > 4 * 60 * 60 * 1000;
   
-  if (UNAVAILABLE_STATUSES.includes(cached.status)) {
+  if (isUnavailableStatus(cached.status)) {
     console.log(`[Gamenight] Player excluded (${cached.status}): ${playerName}`);
     return { available: false, verified: !isStale, status: cached.status, starQualification };
   }
@@ -2335,7 +2464,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     score = 20;
     matchupType = 'vs';
     matchupText = `${awayQB} vs ${homeQB}`;
-    matchupLabel = injuryStatusVerified ? 'QB Matchup' : 'Expected QB Matchup';
+    matchupLabel = 'QB Matchup';
     displayedStars = [awayQB, homeQB];
   }
   // CASE 2: One team has QB, other has defensive star (TWO players, DIFFERENT teams)
@@ -2344,19 +2473,19 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     if (homeQB && awayDefense.length > 0 && homeAbbr && awayAbbr && homeAbbr !== awayAbbr) {
       matchupType = 'vs';
       matchupText = `${awayDefense[0]} vs ${homeQB}`;
-      matchupLabel = injuryStatusVerified ? 'Key Matchup' : 'Key Players';
+      matchupLabel = 'Key Matchup';
       displayedStars = [awayDefense[0], homeQB];
     } else if (awayQB && homeDefense.length > 0 && homeAbbr && awayAbbr && homeAbbr !== awayAbbr) {
       matchupType = 'vs';
       matchupText = `${awayQB} vs ${homeDefense[0]}`;
-      matchupLabel = injuryStatusVerified ? 'Key Matchup' : 'Key Players';
+      matchupLabel = 'Key Matchup';
       displayedStars = [awayQB, homeDefense[0]];
     } else {
       // Fallback - show single player only
       matchupType = 'featured';
       const singleStar = homeQB || awayQB || homeDefense[0] || awayDefense[0];
       matchupText = singleStar;
-      matchupLabel = injuryStatusVerified ? 'Featured Player' : 'Player to Watch';
+      matchupLabel = 'Featured Player';
       displayedStars = singleStar ? [singleStar] : [];
     }
   }
@@ -2365,7 +2494,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     score = 12;
     matchupType = 'vs';
     matchupText = `${awayStars[0]} vs ${homeStars[0]}`;
-    matchupLabel = injuryStatusVerified ? 'Key Matchup' : 'Key Players';
+    matchupLabel = 'Key Matchup';
     displayedStars = [awayStars[0], homeStars[0]];
   }
   // CASE 4: Only one team has star QB (ONE player only)
@@ -2374,7 +2503,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     matchupType = 'featured';
     const qbName = awayQB || homeQB;
     matchupText = qbName;
-    matchupLabel = injuryStatusVerified ? 'Featured QB' : 'QB to Watch';
+    matchupLabel = 'Featured QB';
     displayedStars = [qbName];
   }
   // CASE 5: Only one team has notable players (ONE player only)
@@ -2383,7 +2512,7 @@ const calculateNFLKeyPlayers = (homeTeam, awayTeam) => {
     matchupType = 'featured';
     const singleStar = awayStars[0] || homeStars[0];
     matchupText = singleStar;
-    matchupLabel = injuryStatusVerified ? 'Featured Player' : 'Player to Watch';
+    matchupLabel = 'Featured Player';
     displayedStars = singleStar ? [singleStar] : [];
   }
   // CASE 6: No AVAILABLE notable players
@@ -2547,7 +2676,7 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
     
     matchupType = 'vs';
     matchupText = `${awayBatter} vs ${homeBatter}`;
-    matchupLabel = injuryStatusVerified ? 'Star Batters' : 'Batters to Watch';
+    matchupLabel = 'Star Batters';
     displayedStars = [awayBatter, homeBatter];
   }
   // CASE 3b: One team has star batters
@@ -2558,7 +2687,7 @@ const calculateMLBKeyPlayers = (homeTeam, awayTeam, homePitcher = null, awayPitc
     score = isMVP ? 10 : 8;
     matchupType = 'featured';
     matchupText = singleBatter;
-    matchupLabel = injuryStatusVerified ? 'Featured Batter' : 'Batter to Watch';
+    matchupLabel = 'Featured Batter';
     displayedStars = [singleBatter];
   }
   // CASE 3c: No AVAILABLE notable batters
@@ -2601,14 +2730,9 @@ const buildMatchupResult = (homeTeam, awayTeam, homeStarList, awayStarList, scor
   let matchupType = 'none';
   let matchupText = '';
   
-  // HARD FIX #1: Label reflects actual verification status
-  // If verified: confident labels. If not: hedged labels.
-  let matchupLabel;
-  if (injuryStatusVerified) {
-    matchupLabel = sport === 'nba' ? 'Star Matchup' : 'Key Players';
-  } else {
-    matchupLabel = sport === 'nba' ? 'Expected Matchup' : 'Key Players';
-  }
+  // Label for matchup type - now that we have proper injury prefetching,
+  // always use confident labels
+  let matchupLabel = sport === 'nba' ? 'Star Matchup' : 'Key Players';
   
   let allStars = [];
   
@@ -2622,7 +2746,7 @@ const buildMatchupResult = (homeTeam, awayTeam, homeStarList, awayStarList, scor
     // Only one team has stars - show ONLY ONE player, never multiple from same team
     matchupType = 'featured';
     const singleStar = bestAwayStar || bestHomeStar;
-    matchupLabel = injuryStatusVerified ? 'Featured Player' : 'Player to Watch';
+    matchupLabel = 'Featured Player';
     matchupText = `${singleStar}`;
     allStars = [singleStar];
   } else {
